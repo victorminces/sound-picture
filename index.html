@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sound Picture</title>
+<link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+
+<div id="gate" class="gate">
+  <div class="gate-card">
+    <svg class="gate-mark" viewBox="0 0 220 72" width="220" height="72" aria-hidden="true">
+      <rect x="4"   y="40" width="18" height="28" rx="9" fill="#8e7cff"/>
+      <rect x="32"  y="28" width="18" height="40" rx="9" fill="#6d9bff"/>
+      <rect x="60"  y="34" width="18" height="34" rx="9" fill="#39c5f3"/>
+      <rect x="88"  y="18" width="18" height="50" rx="9" fill="#2fe0c0"/>
+      <rect x="116" y="6"  width="18" height="62" rx="9" fill="#6bef7a"/>
+      <rect x="144" y="14" width="18" height="54" rx="9" fill="#e8e65c"/>
+      <rect x="172" y="30" width="18" height="38" rx="9" fill="#ffe9a8"/>
+      <rect x="200" y="46" width="18" height="22" rx="9" fill="#ffe9a8" opacity=".55"/>
+    </svg>
+
+    <h1>Sound Picture</h1>
+    <p class="gate-sub">See the shape and colour of a speech sound, as it happens.</p>
+
+    <button id="startBtn" class="btn-primary">Turn on the microphone</button>
+
+    <p class="gate-note">The app asks the browser to switch off noise suppression, echo
+      cancellation and automatic gain. This matters: all three are built to clean up speech on
+      calls, and all three flatten the quiet high&#8209;frequency hiss that /s/ is made of.</p>
+    <p id="gateErr" class="gate-err" hidden></p>
+  </div>
+</div>
+
+<main id="app" class="app" hidden>
+
+  <section class="stage">
+    <canvas id="view" class="view-canvas"></canvas>
+    <div id="banner" class="banner" hidden><span id="bannerText"></span></div>
+  </section>
+
+  <aside class="panel" id="panel">
+    <header class="panel-head">
+      <h2>Controls</h2>
+      <button id="collapseBtn" class="btn-ghost" aria-expanded="true">Hide</button>
+    </header>
+
+    <div class="panel-body" id="panelBody">
+
+      <div class="group">
+        <p class="group-label">Picture</p>
+
+        <label for="bright">Brightness</label>
+        <input id="bright" type="range" min="0" max="56" step="1" value="28">
+        <output id="brightOut">+28 dB</output>
+
+        <label for="tilt">Tilt <span class="hint">lifts the high frequencies</span></label>
+        <input id="tilt" type="range" min="0" max="18" step="1" value="9">
+        <output id="tiltOut">+9 dB/oct</output>
+        <p class="note">A vowel runs 20&ndash;30&nbsp;dB hotter than the sibilant band, so without
+          a tilt the vowels set the scale and /s/ sinks. The tilt is a fixed gain curve rising with
+          frequency &mdash; the same offset every time, so productions stay comparable to each
+          other and to a frozen outline.</p>
+
+        <label class="check"><input type="checkbox" id="showCog" checked>
+          Centre&#8209;of&#8209;gravity line</label>
+        <button id="clearTrailBtn" class="btn-ghost">Clear the trail</button>
+      </div>
+
+      <div class="group">
+        <p class="group-label">Background noise</p>
+        <button id="roomBtn" class="btn-accent btn-hold">Press and hold to record and remove
+          background noise</button>
+        <p class="note">Hold it down for a second or two while nobody speaks. Whatever the
+          microphone hears during that time &mdash; a fan, a hum, the room itself &mdash; is
+          recorded and then subtracted from everything afterwards. Hold it longer for a better
+          recording, and do it again whenever the room changes.</p>
+      </div>
+
+      <div class="group">
+        <p class="group-label">Measurements</p>
+        <div class="readouts">
+          <div class="ro"><span class="ro-k">Centre of gravity</span><span class="ro-v" id="roCog">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Spread</span><span class="ro-v" id="roSpread">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Focus</span><span class="ro-v" id="roFocus">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">High&#8209;freq ratio</span><span class="ro-v" id="roHf">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Flutter</span><span class="ro-v" id="roFlutter">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Notch</span><span class="ro-v" id="roNotch">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Steadiness</span><span class="ro-v" id="roStab">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Voicing</span><span class="ro-v" id="roVoice">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">F0</span><span class="ro-v" id="roF0">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Level</span><span class="ro-v" id="roLevel">&mdash;</span></div>
+          <div class="ro"><span class="ro-k">Above room floor</span><span class="ro-v" id="roAbove">&mdash;</span></div>
+        </div>
+      </div>
+
+      <p class="disclaimer">Descriptive only. Microphone and room both colour these numbers, so
+        read change within a session rather than absolute values. Flutter and notch are offered
+        as candidate cues for lateral productions; neither is a settled diagnostic.</p>
+    </div>
+  </aside>
+</main>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>

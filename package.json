@@ -1,0 +1,11 @@
+{
+  "name": "sound-picture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Real-time visual representation of speech sounds, for therapy work on /s/ and the sibilant family",
+  "scripts": {
+    "dev": "node server.mjs",
+    "probe": "node tools/probe.mjs"
+  }
+}

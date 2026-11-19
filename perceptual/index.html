@@ -60,6 +60,12 @@
           rescales itself makes every production look the same and destroys the
           one thing this display is for, which is comparing one with another.
         </p>
+        <label for="grain">Grain size <span class="hint">how coarse the roughness texture is</span></label>
+        <div class="row">
+          <input id="grain" type="range" min="2" max="12" step="1" value="4">
+          <output id="grainOut">4 px</output>
+        </div>
+
         <label class="check"><input id="mapToggle" type="checkbox"> Therapist map</label>
         <button id="clearBtn" class="ghost">Clear the trail</button>
       </div>

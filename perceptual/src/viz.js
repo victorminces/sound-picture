@@ -58,6 +58,13 @@ function rampAt(t) {
   return RAMP[RAMP.length - 1][1];
 }
 
+/**
+ * How far the grain swings the ribbon's brightness at full roughness. The
+ * texture has to survive being looked at across a room by someone who is also
+ * watching a child, so it is deliberately strong.
+ */
+const GRAIN_AMP = 0.85;
+
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 export function createRenderer(canvas) {
@@ -76,6 +83,19 @@ export function createRenderer(canvas) {
   /** Live orb panel occupies the right-hand slice. */
   const ORB_FRAC = 0.26;
   let ripplePhase = 0;
+
+  /**
+   * Grain cell, in CSS pixels. It must be expressed in CSS pixels and
+   * converted, not written as a count of rows: the strip is sized in DEVICE
+   * pixels so that nothing is resampled, and a cell of "3 rows" on a 2x
+   * display is a cell of 1.5 CSS pixels -- which the browser averages away
+   * before it reaches anybody's eye. That is exactly how the roughness
+   * texture came to be invisible on a retina screen while looking correct in
+   * the code.
+   */
+  let grainPx = 4;
+  let grainCells = null;
+  let grainCol = 0;
 
   /** Recent productions, for the optional map. */
   const cloud = [];
@@ -148,19 +168,28 @@ export function createRenderer(canvas) {
     const soft = 0.30 + 1.5 * f.spread;        // in units of `half`
     const sigma = Math.max(1.2, half * soft);
 
+    // Grain cells are square and held across as many columns as they are
+    // tall, so the texture reads as a weave rather than as vertical streaks.
+    const cell = Math.max(1, Math.round(grainPx * dpr));
+    const rough = f.rough;
+    if (rough > 0) {
+      const n = Math.ceil(stripH / cell) + 1;
+      if (!grainCells || grainCells.length !== n) grainCells = new Float32Array(n);
+      if (grainCol % cell === 0) {
+        for (let i = 0; i < n; i++) grainCells[i] = Math.random();
+      }
+    }
+    grainCol++;
+
     const img = stripCtx.getImageData(stripW - 1, 0, 1, stripH);
     const d = img.data;
-    let grainVal = 1;
     for (let y = 0; y < stripH; y++) {
       const dy = (y - yc) / sigma;
       let a = Math.exp(-0.5 * dy * dy);
       if (a < 0.004) continue;
-      // Grain: one random value held over a few rows, so it reads as a
-      // texture on the ribbon rather than as television static.
-      if (f.rough > 0 && (y % 3) === 0) {
-        grainVal = 1 + (Math.random() - 0.5) * 2 * (f.rough * 0.5);
+      if (rough > 0) {
+        a *= 1 + (grainCells[(y / cell) | 0] - 0.5) * 2 * rough * GRAIN_AMP;
       }
-      if (f.rough > 0) a *= grainVal;
       a = clamp01(a) * (0.35 + 0.65 * f.level);
       const o = y * 4;
       d[o] = r; d[o + 1] = g; d[o + 2] = b;
@@ -238,12 +267,17 @@ export function createRenderer(canvas) {
       ctx.fill();
 
       if (f.rough > 0.02) {
-        const n = Math.round(60 + 220 * f.rough);
-        ctx.fillStyle = `rgba(${r},${g},${b},${0.10 + 0.35 * f.rough})`;
+        // Speckle sized from the same control as the ribbon's grain, and
+        // counted from the area it has to cover so the density stays put as
+        // the orb grows with loudness.
+        const sz = Math.max(2, grainPx);
+        const n = Math.min(500, Math.round((rad * rad) / (sz * sz) * (0.9 + 2.2 * f.rough)));
+        ctx.fillStyle = `rgba(${r},${g},${b},${0.14 + 0.46 * f.rough})`;
         for (let i = 0; i < n; i++) {
           const ang = Math.random() * Math.PI * 2;
           const rr = rad * Math.sqrt(Math.random());
-          ctx.fillRect(cx + Math.cos(ang) * rr, cy + Math.sin(ang) * rr, 1.6, 1.6);
+          ctx.fillRect(cx + Math.cos(ang) * rr - sz / 2,
+                       cy + Math.sin(ang) * rr - sz / 2, sz, sz);
         }
       }
 
@@ -298,6 +332,7 @@ export function createRenderer(canvas) {
       cloud.length = 0;
     },
     setRange(lo, hi) { sharpLo = lo; sharpHi = hi; },
+    setGrain(px) { grainPx = Math.max(1, px); grainCells = null; },
     /** Advance the history by one column. Kept apart from draw() so that the
      *  ribbon scrolls at a rate set by the clock rather than by however often
      *  the machine happens to repaint. */

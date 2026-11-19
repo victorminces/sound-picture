@@ -28,6 +28,8 @@ const ui = {
   rangeLo: el('rangeLo'),
   rangeHi: el('rangeHi'),
   rangeOut: el('rangeOut'),
+  grain: el('grain'),
+  grainOut: el('grainOut'),
   out: {
     sharpness: el('oSharp'),
     spread: el('oSpread'),
@@ -137,6 +139,19 @@ function pushRange() {
 }
 ui.rangeLo.addEventListener('input', pushRange);
 ui.rangeHi.addEventListener('input', pushRange);
+/**
+ * Grain size is a control rather than a constant because what reads as a
+ * texture depends on the screen, the viewing distance and the child. The
+ * therapist is the one looking at it and should not have to wait on a deploy
+ * to change it.
+ */
+function pushGrain() {
+  const px = Number(ui.grain.value);
+  ui.grainOut.textContent = px + ' px';
+  if (renderer) renderer.setGrain(px);
+}
+ui.grain.addEventListener('input', pushGrain);
+
 ui.clearBtn.addEventListener('click', () => { if (renderer) renderer.clear(); });
 ui.mapToggle.addEventListener('change', () => {
   if (renderer) renderer.setMap(ui.mapToggle.checked);
@@ -263,6 +278,7 @@ async function start() {
   renderer = createRenderer(ui.canvas);
   renderer.resize();
   pushRange();
+  pushGrain();
   renderer.setMap(ui.mapToggle.checked);
 
   const notes = [];

@@ -235,15 +235,15 @@ function tick(dt, now) {
   // slower time constant an R's grain spilled a fifth of a second into the
   // following vowel, and a short R never reached its full strength.
   //
-  // Gated on there being sound at all (f.loud), no longer on the sibilant
-  // gate. That gate was there because the old measure read a vowel's own
-  // voicing pulse as raggedness; the new one removes the pulse before
-  // measuring, so clean vowels read zero by themselves. Gating on sibilants
-  // also meant a French R, which is not one, could never show grain. The
-  // readout stays ungated, so the measure can be watched on anything.
-  const roughIn = f.loud ? t.rough : 0;
-  smRough += (roughIn - smRough) * (1 - Math.exp(-dt / (roughIn > smRough ? 0.025 : 0.050)));
-  smRoughRaw += (t.rough - smRoughRaw) * (1 - Math.exp(-dt / (t.rough > smRoughRaw ? 0.025 : 0.050)));
+  // Not gated, exactly as in the perceptual app. Grain is drawn only where
+  // the spectrogram itself draws something, so silence stays smooth on its
+  // own. Zeroing the raggedness whenever the loudness gate shut -- as this
+  // did -- made the grain drop out of a quieter R hovering near the gate
+  // while the spectrogram went on drawing the R, which is the case where
+  // this app looked worse than the perceptual one. Gating on the sibilant
+  // gate before that was worse still: a French R never opens it.
+  smRough += (t.rough - smRough) * (1 - Math.exp(-dt / (t.rough > smRough ? 0.025 : 0.050)));
+  smRoughRaw = smRough;
 
   state.notch = f.notch;
   state.rough = smRough;

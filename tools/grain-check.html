@@ -158,7 +158,7 @@ function play(sig, renderer, grain = true) {
     if (BEFORE) {
       sm += ((f.active ? t.flutter : 0) - sm) * (1 - Math.exp(-DT / 0.080));
     } else {
-      const x = f.loud ? t.rough : 0;
+      const x = t.rough;            // ungated, as app.js and the perceptual app
       sm += (x - sm) * (1 - Math.exp(-DT / (x > sm ? 0.025 : 0.050)));
     }
     const now = (s + N) / SR;
@@ -187,7 +187,7 @@ function fieldGeometry() {
 }
 /** Local texture contrast in the field between `agoA` and `agoB` seconds ago. */
 function texture(agoA, agoB) {
-  const g = fieldGeometry(), pxPerSec = g.w / 420 * 60;
+  const g = fieldGeometry(), pxPerSec = g.w / 420 * colsPerSec;
   const xa = (g.x + g.w - agoA * pxPerSec) * g.dpr, xb = (g.x + g.w - agoB * pxPerSec) * g.dpr;
   const x0 = Math.round(xa), w = Math.round(xb - xa), y0 = Math.round(g.y * g.dpr), h = Math.round(g.h * g.dpr);
   const px = canvas.getContext('2d').getImageData(x0, y0, w, h).data;
@@ -217,13 +217,15 @@ const segs = [['-', 0.3]];
 for (let k = 0; k < 3; k++) segs.push(['a', 0.4], ['R', 0.25], ['a', 0.4], ['-', 0.2]);
 segs.push(['a', 0.4], ['R', 1.0], ['a', 0.4]);
 
+let colsPerSec = 60;
 function measureAll(sig, grain) {
   const Rs = sig.kind.filter(([k]) => k === 'R'), As = sig.kind.filter(([k]) => k === 'a');
   const r = createRenderer(canvas);
   r.resize();
+  colsPerSec = r.colsPerSec;
   const res = play(sig, r, grain);
   const ago = (t) => res.end - t;
-  const firstVisible = res.end - 7 + 0.1;
+  const firstVisible = res.end - 420 / colsPerSec + 0.1;
   return {
     res,
     // Vowel middles start a quarter second in: the grain follows the

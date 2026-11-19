@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grain, both apps</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background: #070a13; color: #c9d4ee; font: 13px/1.5 ui-monospace, Consolas, monospace; padding: 12px; margin: 0; }
+  h2 { font: 600 13px system-ui; margin: 10px 0 2px; }
+  canvas { display: block; width: 760px; max-width: 100%; height: 230px; background: #080b16; }
+</style>
+</head>
+<body>
+<h2>Perceptual app (the reference)</h2>
+<canvas id="a"></canvas>
+<h2>Sound picture (this branch)</h2>
+<canvas id="b"></canvas>
+<pre id="out"></pre>
+<script type="module">
+/**
+ * One synthetic recording -- vowel, quiet uvular R, vowel, three times, then a
+ * held quiet R -- through each app's own measurement, smoothing and renderer,
+ * drawn one above the other, so the two can be compared by eye on identical
+ * input. The R is the "quiet" one from grain-check.html: trilled, 10 dB below
+ * the vowel.
+ */
+import * as P from '../perceptual/src/viz.js';
+import { createModulation as PMod } from '../perceptual/src/modulation.js';
+import { createSmoother } from '../perceptual/src/smooth.js';
+import * as S from '../src/viz.js';
+import { createSpectralAnalyzer, SPEC_BANDS, specPos } from '../src/spectral.js';
+import { createTemporalAnalyzer } from '../src/temporal.js';
+
+const SR = 48000, N = 2048, HOP = 800, DT = HOP / SR;
+
+let seed = 5;
+const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1; };
+function resonate(x, fc, bw) {
+  const r = Math.exp(-Math.PI * bw / SR), c = 2 * r * Math.cos(2 * Math.PI * fc / SR);
+  const y = new Float32Array(x.length); let a = 0, b = 0;
+  for (let i = 0; i < x.length; i++) { const v = x[i] + c * a - r * r * b; b = a; a = v; y[i] = v; }
+  return y;
+}
+const segs = [['-', 0.2]];
+for (let k = 0; k < 3; k++) segs.push(['a', 0.4], ['R', 0.25], ['a', 0.4], ['-', 0.2]);
+segs.push(['a', 0.4], ['R', 1.0], ['a', 0.3]);
+function speech() {
+  const n = Math.round(segs.reduce((s, x) => s + x[1], 0) * SR);
+  const src = new Float32Array(n); let next = 0;
+  for (let i = 0; i < n; i++) if (i >= next) { src[i] = 1; next = i + (SR / 110) * (1 + 0.006 * rnd()); }
+  const v = new Float32Array(n);
+  for (const [fc, bw, g] of [[700, 90, 1], [1220, 110, 0.6], [2600, 160, 0.25], [3500, 220, 0.15]]) {
+    const p = resonate(src, fc, bw); for (let i = 0; i < n; i++) v[i] += g * p[i];
+  }
+  let pk = 0; for (const s of v) pk = Math.max(pk, Math.abs(s));
+  const y = new Float32Array(n), kind = [];
+  let i0 = 0;
+  for (const [k, len] of segs) {
+    const i1 = Math.min(n, i0 + Math.round(len * SR));
+    for (let i = i0; i < i1; i++) {
+      let s = 0.0004 * rnd();
+      if (k === 'a') s += v[i] / pk * 0.1;
+      if (k === 'R') { const ph = (i * 30 / SR) % 1; s += (v[i] / pk * 0.1 + 0.008 * rnd()) * (0.05 + 0.95 * Math.exp(-6 * ph)) * 0.316; }
+      y[i] = s;
+    }
+    kind.push([k, i0 / SR, i1 / SR]); i0 = i1;
+  }
+  return { y, kind };
+}
+const sig = speech();
+const segAt = (t) => (sig.kind.find(([, a, b]) => t >= a && t < b) || ['-'])[0];
+
+/* ---------- perceptual app: its modulation, its smoother, its renderer ---------- */
+{
+  const r = P.createRenderer(document.getElementById('a'));
+  r.resize(); r.setRange(0.5, 5); r.setGrain(4); r.setGrainContrast(0.8); r.setGrainThreshold(0);
+  const mod = PMod(SR), sm = createSmoother(), fr = new Float32Array(N);
+  const T = { a: { sharpness: 1.0, spread: 0.35, level: 0.85 }, R: { sharpness: 1.5, spread: 0.55, level: 0.45 } };
+  let acc = 0, f = null;
+  for (let s = 0; s + N <= sig.y.length; s += HOP) {
+    fr.set(sig.y.subarray(s, s + N));
+    const t = mod.analyze(fr, DT), k = segAt((s + N) / SR), tg = T[k], loud = !!tg;
+    f = sm.step(DT, loud, { sharpness: loud ? tg.sharpness : 0, spread: loud ? tg.spread : 0, level: loud ? tg.level : 0,
+      rough: t.rough, fluct: 0, voicing: loud ? Math.max(0, Math.min(1, (t.periodicity - 0.4) / 0.32)) : 0 });
+    acc += DT * r.colsPerSec;
+    const p = Math.min(Math.ceil(r.colsPerSec * 0.25), Math.floor(acc)); acc = Math.min(acc - p, 1);
+    r.advance(f, DT, p);
+  }
+  r.draw({ ...f, active: true, level: 0.45, sharpness: 1.5, rough: 0.6 }, DT);
+}
+
+/* ---------- sound picture: its spectral + temporal, app.js's loop, its renderer ---------- */
+{
+  const win = new Float32Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.42 - 0.5 * Math.cos(2 * Math.PI * i / N) + 0.08 * Math.cos(4 * Math.PI * i / N);
+  const re = new Float64Array(N), im = new Float64Array(N);
+  const fft = (x, out) => {
+    for (let i = 0; i < N; i++) { re[i] = x[i] * win[i]; im[i] = 0; }
+    for (let i = 1, j = 0; i < N; i++) { let bit = N >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+      if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
+    for (let len = 2; len <= N; len <<= 1) {
+      const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+      for (let i = 0; i < N; i += len) { let cr = 1, ci = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const ur = re[i + k], ui = im[i + k], h = i + k + len / 2;
+          const vr = re[h] * cr - im[h] * ci, vi = re[h] * ci + im[h] * cr;
+          re[i + k] = ur + vr; im[i + k] = ui + vi; re[h] = ur - vr; im[h] = ui - vi;
+          const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t; } }
+    }
+    for (let k = 0; k < N / 2; k++) out[k] = 20 * Math.log10(Math.hypot(re[k], im[k]) / N + 1e-12);
+  };
+  const r = S.createRenderer(document.getElementById('b'));
+  r.resize();
+  const spectral = createSpectralAnalyzer(SR, N), temporal = createTemporalAnalyzer(SR, N);
+  const db = new Float32Array(N / 2), fr = new Float32Array(N);
+  const fieldTmp = new Float32Array(SPEC_BANDS), fieldSpec = new Float32Array(SPEC_BANDS), dispSpec = new Float32Array(SPEC_BANDS);
+  const blur3 = (src, dst) => { const n = SPEC_BANDS; dst[0] = (src[0] * 2 + src[1]) / 3; dst[n - 1] = (src[n - 1] * 2 + src[n - 2]) / 3;
+    for (let i = 1; i < n - 1; i++) dst[i] = (src[i - 1] + src[i] * 2 + src[i + 1]) * 0.25; };
+  spectral.startNoiseLearn(48);
+  const room = new Float32Array(N);
+  for (let k = 0; k < 60; k++) { for (let i = 0; i < N; i++) room[i] = 0.0004 * rnd(); fft(room, db); temporal.analyze(room); spectral.analyze(db, { gateDb: 6, periodicity: 0 }); }
+  let sm = 0, acc = 0, rLoud = 0, rN = 0, lastRough = 0;
+  for (let s = 0; s + N <= sig.y.length; s += HOP) {
+    fr.set(sig.y.subarray(s, s + N)); fft(fr, db);
+    const t = temporal.analyze(fr), f = spectral.analyze(db, { gateDb: 6, periodicity: t.periodicity });
+    if (f.learningNoise) continue;
+    const aF = 1 - Math.exp(-DT / 0.030), aS = 1 - Math.exp(-DT / 0.055);
+    for (let i = 0; i < SPEC_BANDS; i++) { fieldTmp[i] += (f.spectrum[i] - fieldTmp[i]) * aF; dispSpec[i] += (f.spectrum[i] - dispSpec[i]) * aS; }
+    blur3(fieldTmp, fieldSpec);
+    sm += (t.rough - sm) * (1 - Math.exp(-DT / (t.rough > sm ? 0.025 : 0.050)));
+    if (segAt((s + N) / SR) === 'R') { rN++; if (f.loud) rLoud++; lastRough = sm; }
+    acc += DT * r.colsPerSec; let c = Math.floor(acc); acc -= c; c = Math.min(c, 4);
+    for (let i = 0; i < c; i++) r.pushColumn(fieldSpec, f.loud ? specPos(f.cogHz) : -1, sm, f.voicing, t.f0Hz);
+  }
+  r.draw({ spectrum: dispSpec, reference: null, referenceLabel: '', notch: null, rough: lastRough, opts: { showCog: false } });
+  document.getElementById('out').textContent =
+    'Sound picture, during the Rs: loudness gate open ' + (100 * rLoud / rN).toFixed(0) + '% of frames.\n' +
+    'Both live panels are drawn as they look mid-R.';
+}
+window.done = true;
+</script>
+</body>
+</html>

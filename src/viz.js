@@ -36,7 +36,8 @@ import { SPEC_BANDS, specPos } from './spectral.js';
 const FONT = '"Nunito", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif';
 
 const HIST = 420;
-const COLS_PER_SEC = 60;
+/** 420 columns at 70 a second is six seconds of history, as in the perceptual app. */
+const COLS_PER_SEC = 70;
 
 /**
  * Frequency -> colour.

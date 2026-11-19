@@ -59,7 +59,7 @@ the child's own recent speech and nothing else.
 | height | sharpness | squeaky vs. deep |
 | thickness | loudness | strong vs. weak |
 | edge softness | spread | focused vs. diffuse |
-| grain | roughness | wet, gurgly, slushy |
+| grain | raggedness (+ its rate) | pulsing, wet, gurgly, slushy |
 | ripple | fluctuation | wobbly, unsteady |
 | core filament | voicing | buzzy vs. airy |
 
@@ -67,26 +67,46 @@ Only sharpness gets a spatial axis, because position is the channel a child
 reads best and sharpness carries the most. Colour runs with height too, so
 position and hue say the same thing twice.
 
-### Roughness and fluctuation are not the same thing
+### The envelope comes from a worklet, and that is the whole point
 
-They are both amplitude modulation and the app at the repository root conflates
-them. They are an order of magnitude apart and they are different percepts:
-fluctuation peaks near **4 Hz** and is heard as a wobble; roughness peaks near
-**70 Hz**, too fast to resolve as events, and fuses into a wet or gurgly
-quality. Roughness is the better candidate for a lateral release.
+Both temporal dimensions read off one modulation spectrum of the amplitude
+envelope, which an **AudioWorklet** computes on every sample and hands over
+decimated to 1.5 kHz.
 
-They need different machinery, because a frame of samples is about 43 ms —
-enough for three cycles at 70 Hz and a fraction of one at 4 Hz. So **roughness
-is measured within a frame** (Goertzel probes on the detrended, windowed
-envelope) and **fluctuation across frames** (a one-pole bracket whose
-coefficients come from elapsed time, so a throttled tab detunes nothing).
+That architecture is not tidiness. An AnalyserNode returns the most recent
+2048 samples whenever it is asked, so consecutive reads overlap by an unknown
+amount and filter state cannot be carried across them — each frame has to be
+analysed alone. 43 ms cannot resolve modulation rate better than about 55 Hz,
+and that is coarser than the distinction being measured. A French uvular /ʁ/
+pulses near 30 Hz; a wet fricative modulates nearer 70. At 55 Hz resolution
+those are one number.
 
-Roughness is a **peak against neighbouring rates**, not an absolute modulation
-depth. Noise modulates itself, and how much depends on its bandwidth, which
-varies from one fricative and one child to the next. Measuring depth directly
-read a perfectly steady /s/ as half rough. Dividing by the modulation energy at
-rates nobody would call rough cancels it, because self-modulation is flat
-across rate.
+They were worse than one number. Tested against a trill gated nearly to
+silence — as deep as amplitude modulation gets — the within-frame version
+scored a 30 Hz trill at **0.04 out of 1** while scoring 70 Hz at 0.34. The
+rate most likely to show a trill fell in a dead zone, partly because 25 Hz was
+in the *reference* set, so a trill suppressed its own score.
+
+With a 341 ms window the rate resolves to about 6 Hz, so it is now **reported
+as a number in its own right** instead of being collapsed into the strength.
+That is a better display as well as a better measurement: a therapist can see
+that a sound is pulsing 30 times a second rather than gurgling 70 times.
+
+Two further details, both found by measurement rather than reasoning:
+
+**Probe spacing has to stay inside the window's resolution.** Log-spaced
+probes left 17 Hz between the top few while the window resolved 6 Hz, so a
+95 Hz modulation fell between 88 and 105 and was missed by both — 0.02 against
+1.00 at 75 Hz. The probes are now evenly spaced every 5 Hz from 15 to 160.
+
+**The two bands are scored differently, for a measured reason.** Raggedness
+uses a peak-to-median ratio, because noise self-modulation up there is large
+and strongly bandwidth-dependent. Fluctuation uses depth directly, because at
+a few Hz self-modulation is neither: steady noise measured 0.013 to 0.025 deep
+across a twelvefold range of carrier bandwidth, against 0.40 or more for
+anything genuinely wavering. Scored by ratio instead, fluctuation read 1.00 at
+2 Hz, 0.22 at 4 Hz and 1.00 at 7 Hz — the six probes overlap at that window
+length, and the median of six correlated numbers is not a background estimate.
 
 ## What was verified offline
 
@@ -103,11 +123,22 @@ level independence    -50 dBFS 3.96   -40 3.89   -30 3.84   -20 3.80
 /s/ 3.84   palatal 2.94   /sh/ 2.66   vowel 0.94
 focused hiss 3.50 Bark   broad slushy 5.56 Bark
 
-roughness vs. rate    steady 0.02   4 Hz 0.00   50 Hz 0.23   70 Hz 0.76
-                                    100 Hz 0.62   150 Hz 0.00   250 Hz 0.00
-fluctuation vs. rate  2 Hz 0.77   4 Hz 0.81   8 Hz 0.59   30 Hz+ 0.00
-roughness vs. depth   0% 0.02   15% 0.10   30% 0.35   50% 0.67   80% 0.88
+trill, rate reported  20->20  25->25  30->30  35->35  45->45
+                      60->60  75->75  95->95  130->130   (all score 1.00)
+
+fluctuation vs. rate  2 Hz 1.00   4 Hz 1.00   7 Hz 1.00
+                      15 Hz 0.00   30 Hz 0.00   70 Hz 0.00
+raggedness, same      0.01        0.05        0.00
+                      1.00        1.00        1.00
+
+steady noise, raggedness by carrier bandwidth:
+  0.15x 0.01    0.35x 0.01    0.9x 0.00    1.8x 0.00
 ```
+
+The last row is the one that matters most. How much a noise band modulates
+itself depends entirely on how wide it is, and a measure that does not cancel
+that will pass its calibration and then fail on real speech — which is exactly
+what happened to the app at the repository root.
 
 The two temporal dimensions are cleanly orthogonal: roughness reads zero across
 the whole fluctuation band and vice versa. In a browser check, sharpness was
@@ -154,8 +185,13 @@ standing. A hold too short to trust restores the previous profile whole.
   children's sibilants sit much higher and vary much more than adults'.
 - Sharpness is sharpness-*like*. DIN 45692's constant assumes a calibrated
   reference this app does not have, so the figure is not an acum.
-- Roughness still cannot distinguish a genuinely wet production from any other
-  source of ~70 Hz modulation in the frication band.
+- Raggedness still cannot distinguish a genuinely wet production from any other
+  source of modulation in its band. It now reports the rate, which helps —
+  a trill and a slushy fricative beat at different speeds — but the rate alone
+  does not identify the cause.
+- The worklet is required. Without it the texture dimensions have no input,
+  and the app says so rather than showing zeros, which would read as "this
+  child's speech is perfectly smooth".
 - The display shows nothing about *where the tongue is*, deliberately.
 
 ## Running it

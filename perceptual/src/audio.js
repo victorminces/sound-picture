@@ -49,6 +49,37 @@ export async function startMic() {
   // speakers in a therapy room causes immediate howl-round.
   source.connect(analyser);
 
+  // The amplitude envelope is computed in a worklet rather than from the
+  // analyser's frames. The analyser hands out the most recent 2048 samples on
+  // request, so consecutive reads overlap by an unknown amount and each frame
+  // has to be analysed alone -- 43 ms, which cannot resolve modulation rate
+  // better than about 55 Hz. That is coarser than the distinction being
+  // measured: a uvular trill pulses near 30 Hz and a wet fricative nearer 70.
+  // A worklet sees every sample once, so a third of a second of envelope can
+  // be gathered and the two told apart.
+  let worklet = { node: null, ok: false, error: null };
+  try {
+    if (!audioCtx.audioWorklet) throw new Error('AudioWorklet is not available');
+    await audioCtx.audioWorklet.addModule(
+      new URL('./envelope-worklet.js', import.meta.url));
+    const node = new AudioWorkletNode(audioCtx, 'envelope-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
+    source.connect(node);
+    // A node has to reach the destination to be pulled by the graph at all.
+    // It writes nothing, and the gain is zero as well, so no path to the
+    // speakers can carry the microphone back into the room.
+    const silent = audioCtx.createGain();
+    silent.gain.value = 0;
+    node.connect(silent);
+    silent.connect(audioCtx.destination);
+    worklet = { node, ok: true, error: null };
+  } catch (err) {
+    worklet = { node: null, ok: false, error: (err && err.message) || String(err) };
+  }
+
   const track = stream.getAudioTracks()[0];
   const settings = track && track.getSettings ? track.getSettings() : {};
 
@@ -69,6 +100,7 @@ export async function startMic() {
     processing,
     anyProcessingOn,
     lowRate: audioCtx.sampleRate < MIN_USABLE_RATE,
+    worklet,
     freqData: new Float32Array(analyser.frequencyBinCount),
     timeData: new Float32Array(analyser.fftSize),
     stop() {

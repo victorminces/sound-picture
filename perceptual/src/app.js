@@ -30,6 +30,8 @@ const ui = {
   rangeOut: el('rangeOut'),
   grain: el('grain'),
   grainOut: el('grainOut'),
+  grainContrast: el('grainContrast'),
+  grainContrastOut: el('grainContrastOut'),
   out: {
     sharpness: el('oSharp'),
     spread: el('oSpread'),
@@ -152,6 +154,13 @@ function pushGrain() {
   if (renderer) renderer.setGrain(px);
 }
 ui.grain.addEventListener('input', pushGrain);
+
+function pushGrainContrast() {
+  const v = Number(ui.grainContrast.value);
+  ui.grainContrastOut.textContent = v + '%';
+  if (renderer) renderer.setGrainContrast(v / 100);
+}
+ui.grainContrast.addEventListener('input', pushGrainContrast);
 
 ui.clearBtn.addEventListener('click', () => { if (renderer) renderer.clear(); });
 ui.mapToggle.addEventListener('change', () => {
@@ -284,6 +293,7 @@ async function start() {
   renderer.resize();
   pushRange();
   pushGrain();
+  pushGrainContrast();
   renderer.setMap(ui.mapToggle.checked);
 
   // The worklet feeds the envelope; without it the texture dimensions have

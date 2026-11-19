@@ -59,11 +59,23 @@ function rampAt(t) {
 }
 
 /**
- * How far the grain swings the ribbon's brightness at full roughness. The
- * texture has to survive being looked at across a room by someone who is also
- * watching a child, so it is deliberately strong.
+ * Grain is drawn by changing LIGHTNESS -- mixing a cell toward white or toward
+ * black -- and never by changing opacity, for two reasons that compounded.
+ *
+ * The ribbon's core is already fully opaque, so a grain that multiplied
+ * opacity could only ever make a cell dimmer there: every brighter cell was
+ * clamped straight back to 1.0. Half the texture was discarded at exactly the
+ * place the eye goes first. And a cell that is the same blue, merely more or
+ * less see-through over near-black, is low contrast by construction. Light
+ * and dark cells of the ribbon's own hue are not.
  */
-const GRAIN_AMP = 0.85;
+function shapeGrain(u) {
+  // Uniform noise puts most cells near the middle, where they barely differ
+  // from the ribbon. Pushing them toward the two ends makes the pattern read
+  // as a texture rather than as a faint shimmer.
+  const s = 2 * u - 1;
+  return s < 0 ? -Math.sqrt(-s) : Math.sqrt(s);
+}
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -94,6 +106,8 @@ export function createRenderer(canvas) {
    * the code.
    */
   let grainPx = 4;
+  /** 0..1, how far toward white or black a cell goes at full raggedness. */
+  let grainContrast = 0.8;
   let grainCells = null;
   let grainCol = 0;
 
@@ -176,7 +190,7 @@ export function createRenderer(canvas) {
       const n = Math.ceil(stripH / cell) + 1;
       if (!grainCells || grainCells.length !== n) grainCells = new Float32Array(n);
       if (grainCol % cell === 0) {
-        for (let i = 0; i < n; i++) grainCells[i] = Math.random();
+        for (let i = 0; i < n; i++) grainCells[i] = shapeGrain(Math.random());
       }
     }
     grainCol++;
@@ -187,13 +201,20 @@ export function createRenderer(canvas) {
       const dy = (y - yc) / sigma;
       let a = Math.exp(-0.5 * dy * dy);
       if (a < 0.004) continue;
+      let cr = r, cg = g, cb = b;
       if (rough > 0) {
-        a *= 1 + (grainCells[(y / cell) | 0] - 0.5) * 2 * rough * GRAIN_AMP;
+        const gv = grainCells[(y / cell) | 0] * rough * grainContrast;
+        if (gv > 0) {
+          cr += (255 - cr) * gv; cg += (255 - cg) * gv; cb += (255 - cb) * gv;
+        } else {
+          const k = 1 + gv;
+          cr *= k; cg *= k; cb *= k;
+        }
       }
       a = clamp01(a) * (0.35 + 0.65 * f.level);
       const o = y * 4;
-      d[o] = r; d[o + 1] = g; d[o + 2] = b;
-      d[o + 3] = Math.round(clamp01(a) * 255);
+      d[o] = cr | 0; d[o + 1] = cg | 0; d[o + 2] = cb | 0;
+      d[o + 3] = Math.round(a * 255);
     }
     stripCtx.putImageData(img, stripW - 1, 0);
 
@@ -270,12 +291,21 @@ export function createRenderer(canvas) {
         // Speckle sized from the same control as the ribbon's grain, and
         // counted from the area it has to cover so the density stays put as
         // the orb grows with loudness.
+        // Two tones, as on the ribbon. Speckles the same colour as the disc
+        // they sit on were nearly invisible inside it; light flecks and dark
+        // pits of the disc's own hue are not.
         const sz = Math.max(2, grainPx);
         const n = Math.min(500, Math.round((rad * rad) / (sz * sz) * (0.9 + 2.2 * f.rough)));
-        ctx.fillStyle = `rgba(${r},${g},${b},${0.14 + 0.46 * f.rough})`;
+        const k = clamp01(f.rough * grainContrast);
+        const lr = Math.round(r + (255 - r) * 0.75);
+        const lg = Math.round(g + (255 - g) * 0.75);
+        const lb = Math.round(b + (255 - b) * 0.75);
+        const light = `rgba(${lr},${lg},${lb},${0.25 + 0.7 * k})`;
+        const dark = `rgba(8,11,22,${0.25 + 0.7 * k})`;
         for (let i = 0; i < n; i++) {
           const ang = Math.random() * Math.PI * 2;
           const rr = rad * Math.sqrt(Math.random());
+          ctx.fillStyle = (i & 1) ? light : dark;
           ctx.fillRect(cx + Math.cos(ang) * rr - sz / 2,
                        cy + Math.sin(ang) * rr - sz / 2, sz, sz);
         }
@@ -333,6 +363,7 @@ export function createRenderer(canvas) {
     },
     setRange(lo, hi) { sharpLo = lo; sharpHi = hi; },
     setGrain(px) { grainPx = Math.max(1, px); grainCells = null; },
+    setGrainContrast(v) { grainContrast = clamp01(v); },
     /** Advance the history by one column. Kept apart from draw() so that the
      *  ribbon scrolls at a rate set by the clock rather than by however often
      *  the machine happens to repaint. */

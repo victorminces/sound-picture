@@ -259,10 +259,39 @@ being contaminated with no effect at all; past half it follows the
 contamination, which is the point at which you were recording the wrong thing
 and should record again.
 
+Two different statistics come out of the same capture. The **mean** (estimated
+as the median above) is what the band energies and the gate are measured
+against, where an average really is the right question to ask. The
+**subtraction** uses a high percentile of the same frames instead, and this
+matters more than it sounds. The power in one FFT bin of a steady noise is
+exponentially distributed about its mean, so subtracting the mean — even 1.6x
+of it, as this did — leaves roughly a fifth of the bins still standing on every
+frame. That residue was a speckle that filled the whole picture in a perfectly
+quiet room. A percentile is what the room actually reaches rather than what it
+averages, and subtracting that empties it.
+
+Then the display gets its own floor, per band, measured rather than predicted.
+Every captured frame is put through the whole chain — subtraction, smoothing,
+binning — and a high percentile of the result becomes that band's floor; a band
+fades in over the 6 dB above its own floor. The single scalar floor this
+replaces was pinned to the loudest band of the *tilted* room, which with any
+tilt at all is the topmost band. So an upward flicker at 20 kHz drew brightly,
+brighter still with the brightness slider up, while exactly the same flicker in
+the middle of the range drew black — which is why the top of the picture stayed
+lit however carefully the room was recorded.
+
 A hold shorter than 0.4 s is treated as a slip of the finger: the previous
-profile is kept and the app says so, rather than quietly replacing a good
-profile with a bad one. Elapsed time is the policy, not frame count, so a slow
-machine does not reject a hold that was plenty long by the clock.
+profile is kept whole and put back, and the app says so, rather than quietly
+replacing a good profile with a bad one. Elapsed time is the policy, not frame
+count, so a slow machine does not reject a hold that was plenty long by the
+clock.
+
+This last point was aspiration rather than fact for a while. The rejection path
+cleared the capture and then left the half-gathered *sum* of a few frames in
+place of the profile — a floor several times too high. The visible effect was
+upside down: a quick click over-subtracted so hard that the picture went clean,
+while a correct press-and-hold, doing the honest thing, looked like it had done
+nothing at all.
 
 One short automatic capture still runs at startup so the app is usable
 immediately.

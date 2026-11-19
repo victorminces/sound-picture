@@ -104,7 +104,7 @@ export function bandIndex(hz) {
  * averaging almost nothing. Set any higher and a slow machine rejects holds
  * that were plenty long by the clock.
  */
-const MIN_NOISE_FRAMES = 4;
+const MIN_NOISE_FRAMES = 8;
 
 /** Notch must be this deep, in dB, before it is reported at all. */
 const NOTCH_MIN_DB = 8;
@@ -201,6 +201,33 @@ export function createSpectralAnalyzer(sampleRate, fftSize) {
   const pick = new Float32Array(NOISE_SNAPSHOTS);
 
   /**
+   * A second floor, used only for the subtraction. The power in one bin of a
+   * steady noise is exponentially distributed about its mean, so subtracting
+   * the mean -- even 1.6x of it -- leaves about a fifth of the bins still
+   * standing. That residue was the speckle that filled a quiet room's picture
+   * and made a correct capture look worse than a mistaken one. A high
+   * percentile of the same snapshots is what the room actually reaches, so
+   * subtracting that empties it. The mean stays as the floor the band energies
+   * and the gate are measured against, where an average is the right statistic.
+   */
+  const noiseSub = new Float32Array(binCount);
+  const NOISE_SUB_PCT = 0.90;
+  /** Exponential quantile at NOISE_SUB_PCT, for the too-few-frames fallback. */
+  const SUB_FALLBACK = 2.3;
+
+  /**
+   * What the room draws as, per display band, once it has been through the
+   * whole processing chain -- measured from the capture rather than predicted,
+   * so it needs no assumption about the room or the microphone. Stored without
+   * the tilt, which is a display offset that can change afterwards.
+   */
+  const noiseDispDb = new Float32Array(SPEC_BANDS).fill(-300);
+  const dispSamples = new Float32Array(SPEC_BANDS * NOISE_SNAPSHOTS);
+  const resid = new Float32Array(binCount);
+  /** Fade a band in over this much clearance above its own room floor. */
+  const ROOM_FADE_DB = 6;
+
+  /**
    * Median of an exponentially distributed power estimate sits at ln(2) of
    * its mean, so scale back up to keep the floor comparable with the mean it
    * replaces. Modest and far less sensitive to the distribution than a lower
@@ -242,20 +269,57 @@ export function createSpectralAnalyzer(sampleRate, fftSize) {
    * What is captured is subtracted from every later frame, so a steady fan or
    * hum stops contributing to the picture and to the measurements.
    */
+  /**
+   * The profile in force, kept whole so that an abandoned capture can put it
+   * back. Without this, pressing the button and letting go too soon wiped a
+   * good floor and left the half-gathered sum in its place -- a floor several
+   * times too high, which over-subtracted so hard that the picture looked
+   * cleaner than a correct capture made it.
+   */
+  let saved = null;
+
+  function saveProfile() {
+    saved = {
+      noise: Float32Array.from(noise),
+      sub: Float32Array.from(noiseSub),
+      disp: Float32Array.from(noiseDispDb),
+      frames: noiseFrames,
+      bandDb: noiseBandDb, hiDb: noiseHiDb, voiceDb: noiseVoiceDb,
+      allDb: noiseAllDb, specDb: noiseSpecDb, rawDb: noiseRawDb,
+      peakDb: dispPeakDb,
+    };
+  }
+
+  function restoreProfile() {
+    if (!saved) return;
+    noise.set(saved.noise);
+    noiseSub.set(saved.sub);
+    noiseDispDb.set(saved.disp);
+    noiseFrames = saved.frames;
+    noiseBandDb = saved.bandDb; noiseHiDb = saved.hiDb;
+    noiseVoiceDb = saved.voiceDb; noiseAllDb = saved.allDb;
+    noiseSpecDb = saved.specDb; noiseRawDb = saved.rawDb;
+    dispPeakDb = saved.peakDb;
+  }
+
   function resetCapture() {
     noise.fill(0);
+    noiseSub.fill(0);
+    noiseDispDb.fill(-300);
     noiseFrames = 0;
     snaps.length = 0;
     snapWrite = 0;
   }
 
   function startNoiseLearn(frames = 45) {
+    saveProfile();
     resetCapture();
     learningNoise = frames;
     holdingNoise = false;
   }
 
   function beginNoiseHold() {
+    saveProfile();
     resetCapture();
     learningNoise = 1;     // kept non-zero for as long as the hold lasts
     holdingNoise = true;
@@ -276,7 +340,7 @@ export function createSpectralAnalyzer(sampleRate, fftSize) {
     const frames = noiseFrames;
     const accepted = commit && frames >= MIN_NOISE_FRAMES;
     if (accepted) finishNoiseLearn();
-    else noiseFrames = 0;   // too short to trust; keep the previous profile
+    else restoreProfile();  // too short to trust; put the previous one back
     return { frames, accepted };
   }
 
@@ -291,10 +355,15 @@ export function createSpectralAnalyzer(sampleRate, fftSize) {
         const m = n >> 1;
         const med = n % 2 ? slice[m] : (slice[m - 1] + slice[m]) / 2;
         noise[i] = med * MEDIAN_TO_MEAN;
+        // The same sorted bin gives the subtraction floor for free.
+        noiseSub[i] = slice[Math.min(n - 1, Math.floor(NOISE_SUB_PCT * (n - 1)))];
       }
     } else {
       // Too few frames to take a median of; fall back to the mean.
-      for (let i = 0; i < binCount; i++) noise[i] /= noiseFrames;
+      for (let i = 0; i < binCount; i++) {
+        noise[i] /= noiseFrames;
+        noiseSub[i] = noise[i] * SUB_FALLBACK;
+      }
     }
     noiseBandDb = 10 * Math.log10(bandSum(noise, B.anaLo, B.anaHi) + EPS);
     noiseHiDb = 10 * Math.log10(bandSum(noise, B.hiLo, B.hiHi) + EPS);
@@ -310,6 +379,35 @@ export function createSpectralAnalyzer(sampleRate, fftSize) {
       const raw = 10 * Math.log10(bandMean(noise, k) + EPS);
       if (raw > noiseRawDb) noiseRawDb = raw;
     }
+    // What the room actually draws as, band by band. Every captured frame is
+    // put through the same subtraction, smoothing and binning as a live one,
+    // and a high percentile of the result becomes that band's floor. Measuring
+    // this beats predicting it: it assumes nothing about the room or the
+    // microphone, and it is what keeps the top of the picture dark, where the
+    // tilt multiplies whatever the room leaves behind by thirty-odd dB.
+    if (n >= 8) {
+      for (let j = 0; j < n; j++) {
+        const snap = snaps[j];
+        for (let i = 0; i < binCount; i++) {
+          const p = snap[i] - noiseSub[i];
+          resid[i] = p > 0 ? p : 0;
+        }
+        smoothLinearInto(resid, powerWide);
+        for (let k = 0; k < SPEC_BANDS; k++) {
+          dispSamples[k * n + j] = 10 * Math.log10(bandMean(powerWide, k) + EPS);
+        }
+      }
+      const idx = Math.min(n - 1, Math.floor(0.97 * (n - 1)));
+      const slice = pick.subarray(0, n);
+      for (let k = 0; k < SPEC_BANDS; k++) {
+        for (let j = 0; j < n; j++) slice[j] = dispSamples[k * n + j];
+        slice.sort();
+        noiseDispDb[k] = slice[idx];
+      }
+    } else {
+      noiseDispDb.fill(-300);
+    }
+
     dispPeakDb = noiseSpecDb + 12;
   }
 
@@ -414,7 +512,7 @@ export function createSpectralAnalyzer(sampleRate, fftSize) {
     // Spectral subtraction, so room hiss does not drag the centre of gravity
     // around while the child is quiet.
     for (let i = 0; i < binCount; i++) {
-      const p = power[i] - noise[i] * 1.6;
+      const p = power[i] - noiseSub[i];
       power[i] = p > 0 ? p : 0;
     }
 
@@ -466,11 +564,23 @@ export function createSpectralAnalyzer(sampleRate, fftSize) {
     if (maxBandDb > dispPeakDb) dispPeakDb = maxBandDb;
     else dispPeakDb = Math.max(noiseSpecDb + 12, dispPeakDb - 0.6);
 
+    // refLo sets the brightness scale and nothing else. What is drawn at all
+    // is decided per band, by fading each one out as it nears its own measured
+    // room floor. The scalar could never do that job: it is pinned to the
+    // loudest band of the tilted room, which with any tilt is the topmost band,
+    // so an upward flicker up there drew brightly -- brighter still once the
+    // brightness slider was turned up -- while the same flicker in the middle
+    // drew black. That is why the top of the picture stayed lit however
+    // carefully the room was recorded.
     const refSpan = 46;
     const top = lockedTopDb !== null ? lockedTopDb : dispPeakDb;
     const refLo = Math.max(noiseSpecDb + 2, top - refSpan);
     for (let k = 0; k < SPEC_BANDS; k++) {
-      spectrum[k] = clamp01((bandDb[k] + displayGainDb - refLo) / refSpan);
+      const v = clamp01((bandDb[k] + displayGainDb - refLo) / refSpan);
+      if (noiseDispDb[k] <= -299) { spectrum[k] = v; continue; }
+      // bandDb carries the tilt and the stored floor does not, so take it off.
+      const clear = bandDb[k] - tiltDb[k] - noiseDispDb[k];
+      spectrum[k] = v * clamp01(clear / ROOM_FADE_DB);
     }
 
     const levelRel = clamp01((levelDb - noiseBandDb) / 55);

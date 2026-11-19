@@ -3,7 +3,7 @@
  *
  * Two analysis paths run side by side on every frame. The temporal path works
  * straight off the waveform and owns everything that needs millisecond
- * resolution: level, flutter, F0 and periodicity. The spectral path takes the
+ * resolution: level, roughness, F0 and periodicity. The spectral path takes the
  * FFT and owns the envelope that gets drawn, plus the measures that are
  * summaries of that envelope. The gate needs both, so temporal runs first and
  * hands its periodicity to spectral.
@@ -28,7 +28,7 @@ const ui = {
   tilt: el('tilt'), tiltOut: el('tiltOut'),
   collapseBtn: el('collapseBtn'), panelBody: el('panelBody'),
   roCog: el('roCog'), roSpread: el('roSpread'), roFocus: el('roFocus'),
-  roHf: el('roHf'), roFlutter: el('roFlutter'), roNotch: el('roNotch'),
+  roHf: el('roHf'), roRough: el('roRough'), roNotch: el('roNotch'),
   roStab: el('roStab'), roVoice: el('roVoice'), roF0: el('roF0'),
   roLevel: el('roLevel'), roAbove: el('roAbove'),
 };
@@ -73,8 +73,8 @@ const state = {
 let colAcc = 0;
 let lastReadoutAt = 0;
 let bannerTimer = 0;
-let smFlutter = 0;      // gated, drives the grain
-let smFlutterRaw = 0;   // ungated, shown in the readout for diagnosis
+let smRough = 0;        // gated on sound, drives the grain
+let smRoughRaw = 0;     // ungated, shown in the readout for diagnosis
 
 /* ---------------- start ---------------- */
 
@@ -224,7 +224,6 @@ function tick(dt, now) {
 
   const aField = 1 - Math.exp(-dt / 0.030);
   const aShape = 1 - Math.exp(-dt / 0.055);
-  const aSlow = 1 - Math.exp(-dt / 0.080);
 
   for (let i = 0; i < SPEC_BANDS; i++) {
     fieldTmp[i] += (f.spectrum[i] - fieldTmp[i]) * aField;
@@ -232,15 +231,19 @@ function tick(dt, now) {
   }
   blur3(fieldTmp, fieldSpec);
 
-  // Flutter is noisy frame to frame; the grain it drives should not strobe.
+  // Roughness drives the grain. It rises in 25 ms and falls in 50: with one
+  // slower time constant an R's grain spilled a fifth of a second into the
+  // following vowel, and a short R never reached its full strength.
   //
-  // The grain stays gated on the sibilant gate: outside a fricative the
-  // envelope is modulated at the voicing rate, which is not raggedness and
-  // would paint grain over every vowel. The readout is deliberately NOT gated,
-  // so the measure can be watched responding to anything at all while we work
-  // out whether it separates real lateral productions.
-  smFlutter += ((f.active ? t.flutter : 0) - smFlutter) * aSlow;
-  smFlutterRaw += (t.flutter - smFlutterRaw) * aSlow;
+  // Gated on there being sound at all (f.loud), no longer on the sibilant
+  // gate. That gate was there because the old measure read a vowel's own
+  // voicing pulse as raggedness; the new one removes the pulse before
+  // measuring, so clean vowels read zero by themselves. Gating on sibilants
+  // also meant a French R, which is not one, could never show grain. The
+  // readout stays ungated, so the measure can be watched on anything.
+  const roughIn = f.loud ? t.rough : 0;
+  smRough += (roughIn - smRough) * (1 - Math.exp(-dt / (roughIn > smRough ? 0.025 : 0.050)));
+  smRoughRaw += (t.rough - smRoughRaw) * (1 - Math.exp(-dt / (t.rough > smRoughRaw ? 0.025 : 0.050)));
 
   state.notch = f.notch;
 
@@ -252,7 +255,7 @@ function tick(dt, now) {
   cols = Math.min(cols, 4);
   const cogPos = f.loud ? specPos(f.cogHz) : -1;
   for (let i = 0; i < cols; i++) {
-    renderer.pushColumn(fieldSpec, cogPos, smFlutter, f.voicing, t.f0Hz);
+    renderer.pushColumn(fieldSpec, cogPos, smRough, f.voicing, t.f0Hz);
   }
 
   state.opts.showCog = ui.showCog.checked;
@@ -276,7 +279,7 @@ function updateReadouts(f, t) {
   ui.roAbove.textContent = (f.aboveFloorDb >= 0 ? '+' : '') +
     f.aboveFloorDb.toFixed(0) + ' dB' + (f.loud ? '' : ' (below ' + GATE_DB + ')');
   ui.roF0.textContent = t.f0Hz > 0 && f.voicing > 0.3 ? Math.round(t.f0Hz) + ' Hz' : dash;
-  ui.roFlutter.textContent = smFlutterRaw.toFixed(2);
+  ui.roRough.textContent = smRoughRaw.toFixed(2);
 
   if (!f.loud) {
     ui.roCog.textContent = dash;
@@ -292,7 +295,7 @@ function updateReadouts(f, t) {
   ui.roSpread.textContent = f.spreadOct.toFixed(2) + ' oct';
   ui.roFocus.textContent = f.focus.toFixed(2);
   ui.roHf.textContent = f.hfRatio.toFixed(2);
-  ui.roFlutter.textContent = smFlutter.toFixed(2);
+  ui.roRough.textContent = smRough.toFixed(2);
   ui.roNotch.textContent = f.notch
     ? Math.round(f.notch.hz) + ' Hz, ' + f.notch.depthDb.toFixed(0) + ' dB'
     : 'none';

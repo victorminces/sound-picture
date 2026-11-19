@@ -12,7 +12,7 @@
  *                       the same colours, which is what lets a child recognise
  *                       their own /s/ by sight. Colour never encodes quality.
  *   brightness          energy in that band
- *   grain               flutter. A ragged airstream renders rough, a clean one
+ *   grain               roughness. A ragged airstream renders rough, a clean one
  *                       glassy. This is an iconic mapping rather than an
  *                       arbitrary one: slushy looks slushy, and nobody has to
  *                       be taught what it means. The grain is driven entirely
@@ -117,22 +117,53 @@ export function createRenderer(canvas) {
     shape = { x: field.x + field.w + gap, y: padT, w: shapeW, h: fieldH };
   }
 
+  /**
+   * Grain cells, in strip pixels, sized so a cell is about GRAIN_CSS_PX on
+   * screen whatever the window size, and square. The strip is 420 x 128 and is
+   * stretched to the field, so a strip pixel is two to three CSS pixels; the
+   * old grain was one column wide and three bands tall, which read as vertical
+   * streaks rather than texture.
+   */
+  const GRAIN_CSS_PX = 4.5;
+  let grainU = new Float32Array(SPEC_BANDS), grainS = new Int8Array(SPEC_BANDS);
+  let grainCol = 0;
+
   /** Push one moment into the scrolling history. */
-  function pushColumn(spectrum, cogPos, flutter, voicing, f0Hz) {
+  function pushColumn(spectrum, cogPos, rough, voicing, f0Hz) {
     sctx.globalCompositeOperation = 'copy';
     sctx.drawImage(strip, -1, 0);
     sctx.globalCompositeOperation = 'source-over';
 
-    // Grain amplitude comes straight from the measured modulation. At zero it
-    // is exactly 1, so a steady sound is drawn perfectly smooth.
-    //
-    // One random value is held across several bands rather than drawn per
-    // pixel: independent noise at every pixel reads as television static,
-    // which is a texture nobody associates with a wet, slushy sound. Held
-    // over a few bands it upscales into soft blotches instead.
-    const grain = (flutter || 0) * 0.42;
-    const GRAIN_RUN = 3;
-    let gn = 1;
+    // Grain is drawn as flecks -- light ones three quarters of the way to
+    // white, and dark pits where the background shows through -- the rule
+    // the perceptual app arrived at after measuring it. Two earlier versions
+    // failed: scaling opacity up and down clipped every brighter cell back to
+    // 1.0 wherever the spectrogram is already bright, so half the texture
+    // vanished where the eye goes first; and shading in proportion to the
+    // measure, from zero, left moderate raggedness -- what real speech has --
+    // too faint to see. Flecks are plainly visible from the first hint of
+    // raggedness, and more raggedness means more of them and stronger ones.
+    const rg = Math.max(0, Math.min(1, rough || 0));
+    // Flecks fade in between raggedness 0.05 and 0.20 rather than appearing
+    // at full visibility the moment it passes zero. An R's raggedness takes a
+    // moment to decay after the R ends, and with the instant switch-on that
+    // decay stayed plainly visible about 180 ms into the following vowel,
+    // measured; the fade-in halves that and leaves an R (0.55-1.0) untouched.
+    const ramp = Math.max(0, Math.min(1, (rg - 0.05) / 0.15));
+    const on = ramp > 0;
+    const strength = on ? Math.min(1, 0.25 + 0.7 * Math.min(1, rg * 0.8)) * ramp : 0;
+    const coverage = on ? 1 - Math.exp(-(0.9 + 2.2 * rg) / Math.PI) : 0;
+    const colPx = field.w > 0 ? field.w / HIST : 2.4;
+    const rowPx = field.h > 0 ? field.h / SPEC_BANDS : 2.8;
+    const cellC = Math.max(1, Math.round(GRAIN_CSS_PX / colPx));
+    const cellR = Math.max(1, Math.round(GRAIN_CSS_PX / rowPx));
+    if (on && grainCol % cellC === 0) {
+      for (let i = 0; i < SPEC_BANDS; i++) {
+        grainU[i] = Math.random();
+        grainS[i] = Math.random() < 0.5 ? -1 : 1;
+      }
+    }
+    grainCol++;
 
     const d = col.data;
     for (let r = 0; r < SPEC_BANDS; r++) {
@@ -140,18 +171,29 @@ export function createRenderer(canvas) {
       const v = ink(spectrum[band]);
       const [cr, cg, cb] = rampAt(band / (SPEC_BANDS - 1));
       const glow = v * v * v * v * 0.5;
-      const o = r * 4;
-      d[o]     = cr + (255 - cr) * glow;
-      d[o + 1] = cg + (255 - cg) * glow;
-      d[o + 2] = cb + (255 - cb) * glow;
+      let R = cr + (255 - cr) * glow;
+      let G = cg + (255 - cg) * glow;
+      let B = cb + (255 - cb) * glow;
+      let A = Math.pow(v, 1.1);
 
-      let a = Math.pow(v, 1.1);
-      if (grain > 0 && a > 0) {
-        if (r % GRAIN_RUN === 0) gn = 1 + (Math.random() - 0.5) * 2 * grain;
-        a *= gn;
-        if (a < 0) a = 0; else if (a > 1) a = 1;
+      const ci = (r / cellR) | 0;
+      if (on && A > 0.1 && grainU[ci] < coverage) {
+        // Only where the sound is visibly drawn, as the perceptual app's
+        // flecks stay inside its ribbon.
+        const s = strength * Math.min(1, (A - 0.1) / 0.3);
+        if (grainS[ci] > 0) {
+          const A2 = A + (1 - A) * s;
+          R = (R * A * (1 - s) + (R + (255 - R) * 0.75) * s) / A2;
+          G = (G * A * (1 - s) + (G + (255 - G) * 0.75) * s) / A2;
+          B = (B * A * (1 - s) + (B + (255 - B) * 0.75) * s) / A2;
+          A = A2;
+        } else {
+          A *= 1 - s;
+        }
       }
-      d[o + 3] = Math.round(a * 255);
+      const o = r * 4;
+      d[o] = R; d[o + 1] = G; d[o + 2] = B;
+      d[o + 3] = Math.round(Math.max(0, Math.min(1, A)) * 255);
     }
     sctx.putImageData(col, HIST - 1, 0);
 

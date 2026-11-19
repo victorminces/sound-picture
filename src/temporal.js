@@ -3,7 +3,7 @@
  *
  * Everything in here is measured directly from the waveform, with no FFT, and
  * therefore with none of the time-frequency tradeoff that governs the spectral
- * path. That matters most for flutter: a 2048-point FFT averages power over
+ * path. That matters most for roughness: a 2048-point FFT averages power over
  * 42.7 ms, which acts as a low-pass with its first null at 23 Hz, so any
  * raggedness faster than roughly 12 Hz is gone before anything downstream can
  * look at it. Rectifying the waveform instead costs nothing and keeps
@@ -14,24 +14,24 @@
  * unpredictably; a settling margin is discarded at the start instead.
  */
 
-const SETTLE = 320;          // samples dropped while the filters settle
-const HP_HZ = 2000;          // isolate the fricative band before rectifying
-const ENV_HZ = 400;          // envelope follower
-const SLOW_HZ = 120;         // keeps slow modulation, drops intrinsic hiss
+import { createModulation } from './modulation.js';
 
 /**
- * Bandpass noise has a naturally fluctuating envelope even when the sound is
- * perfectly steady, so a raw coefficient of variation is never zero. These two
- * constants place the zero point just above that intrinsic level and set how
- * much excess modulation counts as fully ragged. Calibrated against synthetic
- * steady and modulated noise in tools/probe.mjs.
+ * Roughness -- the ragged, wet or rattling quality of a sound -- comes from
+ * modulation.js, the measure developed and checked in the perceptual app.
+ *
+ * It replaces a flutter measure that never worked: the coefficient of
+ * variation of a smoothed envelope against a fixed threshold. How much a band
+ * of noise varies on its own depends on how wide the band is, so the threshold
+ * that passed against the narrow synthetic carrier it was calibrated on never
+ * tripped on a real, wide /s/ -- it read 0.00 at every modulation rate tested.
+ * The replacement removes the voice's own pulse first (with a YIN pitch
+ * tracker), then scores modulation depth at 40-110 Hz above what smooth sounds
+ * reach: clean vowels and /s/ read 0.00, a voiced uvular R about 0.8-1.0.
  */
-const CV_FLOOR = 0.12;
-const CV_SPAN = 0.34;
 
 export function createTemporalAnalyzer(sampleRate, frameSize) {
-  const hpA = Math.exp(-2 * Math.PI * HP_HZ / sampleRate);
-  const envK = 1 - Math.exp(-2 * Math.PI * ENV_HZ / sampleRate);
+  const roughness = createModulation(sampleRate);
 
   // --- decimated buffer for periodicity ---
   const DECIM = 4;
@@ -114,60 +114,16 @@ export function createTemporalAnalyzer(sampleRate, frameSize) {
     const rms = Math.sqrt(sq / n);
     const rmsDb = 20 * Math.log10(rms + 1e-12);
 
-    // Periodicity first, because F0 sets where the envelope filter has to cut.
+    // Periodicity, F0 and voicing for display and for the gate: unchanged.
     const { r, f0 } = periodicity(time);
 
-    // Every glottal pulse gates the frication, so a voiced sibilant's envelope
-    // is modulated at F0 whether or not the airstream is ragged. That is
-    // voicing, not slushiness, and we already display it separately. Keep the
-    // envelope filter below F0 so it cannot be mistaken for flutter -- which
-    // matters most for a low-pitched adult voice, where F0 sits right on the
-    // fixed 120 Hz cutoff.
-    const slowHz = (f0 > 0 && r > 0.4) ? Math.min(SLOW_HZ, 0.6 * f0) : SLOW_HZ;
-    const slowK = 1 - Math.exp(-2 * Math.PI * slowHz / sampleRate);
-
-    // --- high-band amplitude envelope ---
-    // Two cascaded one-pole high-passes (-12 dB/octave) knock voicing down by
-    // roughly 30 dB before rectification, so the envelope describes the
-    // frication rather than the voice underneath it.
-    let y1 = 0, p1 = 0, y2 = 0, p2 = 0;
-    let env = 0, slow = 0;
-    let sum = 0, sumSq = 0, count = 0;
-    let peak = 0;
-
-    for (let i = 0; i < n; i++) {
-      const x = time[i];
-      y1 = hpA * (y1 + x - p1); p1 = x;
-      y2 = hpA * (y2 + y1 - p2); p2 = y1;
-
-      env += (Math.abs(y2) - env) * envK;
-      slow += (env - slow) * slowK;
-
-      if (i >= SETTLE) {
-        sum += slow;
-        sumSq += slow * slow;
-        count++;
-        if (slow > peak) peak = slow;
-      }
-    }
-
-    let flutter = 0, cv = 0, hfRms = 0;
-    if (count > 0) {
-      const mean = sum / count;
-      hfRms = mean;
-      if (mean > 1e-7) {
-        const varr = Math.max(0, sumSq / count - mean * mean);
-        cv = Math.sqrt(varr) / mean;
-        flutter = Math.max(0, Math.min(1, (cv - CV_FLOOR) / CV_SPAN));
-      }
-    }
+    // Roughness, with the voice's own pulse removed before it is measured.
+    const m = roughness.analyze(time);
 
     return {
       rms, rmsDb,
-      hfRms,
-      hfDb: 20 * Math.log10(hfRms + 1e-12),
-      cv,            // raw coefficient of variation, before the floor
-      flutter,       // 0 = steady hiss, 1 = strongly modulated
+      rough: m.rough,            // 0 = smooth, 1 = strongly ragged
+      roughDepth: m.roughDepth,  // raw modulation depth, before the floor
       periodicity: r,
       f0Hz: f0,
     };

@@ -33,8 +33,10 @@ npm run probe
 ```
 
 runs the offline checks: gate decisions on synthetic sibilants and vowels, the
-display spectrum of each production as ASCII, the flutter calibration, and the
-display reference lock.
+display spectrum of each production as ASCII, roughness on clean vowels, hiss and
+trilled Rs, and the display reference lock. `tools/grain-check.html`, opened
+through the dev server, checks the drawing: that a ragged sound is drawn grainy
+and a vowel is not.
 
 ---
 
@@ -51,7 +53,7 @@ uses a long window (42.7 ms) and heavy band averaging, because all of those
 are averages anyway and stability matters more than speed.
 
 **The temporal path** (`temporal.js`) works straight off the waveform with no
-FFT at all, and owns everything needing millisecond resolution: level, flutter,
+FFT at all, and owns everything needing millisecond resolution: level, roughness,
 F0, periodicity.
 
 ### The envelope filter
@@ -82,7 +84,7 @@ would undo the reference lock below.
 **Brightness** slides the 46 dB window up and down. Both are display-only and
 never touch the measurements.
 
-That split matters most for flutter. A 2048-point FFT averages power over
+That split matters most for roughness. A 2048-point FFT averages power over
 42.7 ms, which acts as a low-pass with its first null at 23 Hz — so any
 raggedness faster than roughly 12 Hz is gone before anything downstream could
 look at it. Rectifying the waveform instead costs nothing and keeps modulation
@@ -114,7 +116,7 @@ muddy another:
 | Vertical position | frequency |
 | Hue | frequency again, fixed |
 | Brightness | energy in that band |
-| **Grain** | **flutter** — a ragged airstream renders rough, a clean one glassy |
+| **Grain** | **roughness** — a ragged airstream renders rough, a clean one glassy |
 | F0 line | pitch, with weight and brightness scaled by how voiced the moment is |
 | Amber marker | an antiresonance notch |
 | White thread | centre of gravity, moment by moment |
@@ -126,7 +128,7 @@ or correction.
 
 The grain is an iconic mapping rather than an arbitrary one — slushy looks
 slushy, and nobody has to be taught what it means. It is driven entirely by the
-measured modulation; at zero flutter the drawing is exactly smooth.
+measured modulation; at zero roughness the drawing is exactly smooth.
 
 **The spectral measures need no channel of their own.** Centre of gravity,
 spread, high-frequency ratio and bimodality are summaries of the envelope's
@@ -200,9 +202,10 @@ produced the same symptom — measurements missing most of the time:
   moments do not.
 - **Focus** — spread, inverted and bounded.
 - **High-frequency ratio** — energy above 4.5 kHz against 2–4.5 kHz.
-- **Flutter** — excess amplitude modulation beyond what steady noise produces
-  on its own. Zero for a clean hiss; approaches 1 for strongly modulated noise
-  in the 20–80 Hz range.
+- **Roughness** — how deeply the high-band envelope rises and falls at
+  40–110 Hz, after the voice's own pulse has been removed. Zero for clean
+  vowels and a clean hiss; near 1 for a trilled or gurgly production. See
+  *Roughness* below for why it replaced the earlier flutter measure.
 - **Notch** — deepest valley flanked by real energy on both sides, searched
   over 2–6 kHz, detected unsmoothed. Suppressed on voiced sounds, because the
   gap between voice bar and frication in a /z/ is a genuine deep valley that
@@ -228,6 +231,47 @@ clearly above the measured room floor, and a firmer periodicity threshold.
 The remaining hole: a steady hum that was *present* during the room measurement
 becomes part of the floor and is correctly ignored, but one that starts
 afterwards can read as voicing. Re-measure the room if that happens.
+
+### Roughness
+
+The grain used to be driven by a *flutter* measure: the coefficient of
+variation of a smoothed envelope against a fixed threshold. It never worked.
+How much a band of noise varies on its own depends on how wide the band is, and
+the threshold was calibrated on a narrow synthetic carrier; on anything as wide
+as a real /s/ it read 0.00 at every modulation rate tested. And the grain was
+gated on the sibilant gate, which a French R or any non-sibilant never opens —
+in simulation the gate was open for 0% of an R's frames — so even a working
+measure could not have drawn grain on one.
+
+Both are replaced with what was developed and checked in the perceptual app
+(`perceptual/README.md` has the full account):
+
+- **The measure** (`src/modulation.js`, `src/pitch.js`). A YIN pitch tracker
+  finds the voice's pulse, which is averaged over whole periods and subtracted
+  from the envelope; a vowel's energy above 2 kHz arrives as one burst per
+  glottal cycle, and for an adult voice that pulse sits right in the roughness
+  band. What is left is scored on modulation depth at 40–110 Hz, above what
+  smooth sounds reach. Clean vowels at 80–250 Hz and steady hiss read 0.00; a
+  voiced uvular R reads 0.8–1.0.
+- **The gate.** Grain now follows `f.loud` — there is sound — rather than the
+  sibilant gate. Vowels no longer need keeping out by gating; they read zero
+  on their own.
+- **The drawing.** Light flecks and dark pits, square, about 4.5 CSS pixels,
+  in place of opacity scaled up and down per column (which clipped in bright
+  regions and read as vertical streaks). Raggedness rises in 25 ms and falls in
+  50, and flecks fade in between 0.05 and 0.20, so an R's grain stops at the R
+  instead of trailing into the next vowel.
+
+Measured in `tools/grain-check.html` on four spoken a-R-a and a held R:
+
+```
+                                   before     after
+grain added to each R              x1.00      x1.74 - x3.08
+grain added to the vowels          0.000      0.000 - 0.001
+```
+
+This app's own pitch, voicing, gate and F0 line are unchanged; YIN is used only
+inside the roughness measure.
 
 ### Gating
 
@@ -326,7 +370,7 @@ The microphone is never routed to the speakers, to avoid howl-round.
 - **Untested with real speech.** Everything is validated against synthetic
   signals and driven end to end in a real browser; no child and no clinician
   has used it.
-- **Flutter and notch are candidate cues for lateral productions, not settled
+- **Roughness and notch are candidate cues for lateral productions, not settled
   diagnostics.** They are offered so you can find out whether they separate
   your lateral cases — not because the literature says they will. There is no
   clean acoustic signature for laterality.
@@ -346,10 +390,13 @@ index.html        markup and the control panel
 server.mjs        zero-dependency dev server
 src/audio.js      microphone capture and constraint reporting
 src/spectral.js   FFT path: envelope, moments, notch   (no DOM, no audio API)
-src/temporal.js   waveform path: level, flutter, F0    (no DOM, no audio API)
+src/temporal.js   waveform path: level, roughness, F0  (no DOM, no audio API)
+src/modulation.js roughness, copied from perceptual/    (no DOM, no audio API)
+src/pitch.js      YIN pitch tracker, copied likewise    (no DOM, no audio API)
 src/viz.js        canvas rendering                     (no audio API)
 src/app.js        wiring, smoothing, controls, freeze and compare
 tools/probe.mjs   offline checks
+tools/grain-check.html  in-browser check that grain is drawn where it should be
 ```
 
 Both analysis modules are deliberately free of browser APIs: they take a

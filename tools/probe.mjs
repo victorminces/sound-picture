@@ -5,8 +5,8 @@
  *   1. the gate opens for sibilants, voiced and voiceless, and stays shut for
  *      vowels and silence;
  *   2. each production draws a visibly different display spectrum;
- *   3. the flutter measure separates steady noise from modulated noise, which
- *      is what sets the two calibration constants in temporal.js.
+ *   3. roughness reads zero on clean vowels and steady hiss, and clearly on a
+ *      trilled R -- see src/modulation.js for how it is measured.
  *
  * Run with:  npm run probe
  */
@@ -154,40 +154,82 @@ for (const [name, humps, time, wantActive] of CASES) {
 
 /* ---------------------------------------------------------------- */
 
-console.log('\n3. FLUTTER CALIBRATION');
-console.log('   Bandpass noise has a fluctuating envelope even when steady, so the');
-console.log('   zero point has to sit just above that intrinsic level.\n');
+console.log('\n3. ROUGHNESS');
+console.log('   Sequential frames, as the app sees them. Clean vowels and steady');
+console.log('   hiss must read zero at every pitch; a trilled R must read clearly.');
+console.log('   (Replaces a flutter measure that read 0.00 on everything real.)\n');
 
-/** Broadband noise, optionally amplitude modulated. */
-function noiseFrame(modHz, depth) {
-  const x = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    const m = modHz ? 1 + depth * Math.sin((2 * Math.PI * modHz * i) / SR) : 1;
-    x[i] = (Math.random() * 2 - 1) * 0.3 * m;
+const HOP = 800;
+let rseed = 3;
+const rrnd = () => { rseed = (rseed * 1103515245 + 12345) & 0x7fffffff; return rseed / 0x7fffffff * 2 - 1; };
+function resonate(x, fc, bw) {
+  const r = Math.exp(-Math.PI * bw / SR), c = 2 * r * Math.cos(2 * Math.PI * fc / SR);
+  const y = new Float32Array(x.length);
+  let p = 0, q = 0;
+  for (let i = 0; i < x.length; i++) { const v = x[i] + c * p - r * r * q; q = p; p = v; y[i] = v; }
+  return y;
+}
+/** An /a/ from a jittered pulse train; optionally trilled, with frication. */
+function vowelSignal(f0, { trill = 0, noise = 0 } = {}) {
+  const n = SR * 3, src = new Float32Array(n);
+  let next = 0;
+  for (let i = 0; i < n; i++) {
+    if (i >= next) {
+      src[i] = 1;
+      const f = f0 * (1 + 0.06 * Math.sin(2 * Math.PI * 0.7 * i / SR));
+      next = i + (SR / f) * (1 + 0.006 * rrnd());
+    }
   }
+  const y = new Float32Array(n);
+  for (const [fc, bw, g] of [[700, 90, 1], [1220, 110, 0.6], [2600, 160, 0.25], [3500, 220, 0.15]]) {
+    const p = resonate(src, fc, bw);
+    for (let i = 0; i < n; i++) y[i] += g * p[i];
+  }
+  let pk = 0; for (const v of y) pk = Math.max(pk, Math.abs(v));
+  for (let i = 0; i < n; i++) {
+    let v = y[i] / pk * 0.1 + noise * 0.02 * rrnd();
+    if (trill) { const ph = (i * trill / SR) % 1; v *= 0.05 + 0.95 * Math.exp(-6 * ph); }
+    y[i] = v;
+  }
+  return y;
+}
+/** Band noise at 7 kHz: a steady /s/-like hiss. */
+function hissSignal() {
+  const n = SR * 3, x = new Float32Array(n);
+  const w = 2 * Math.PI * 7000 / SR, r = Math.exp(-Math.PI * 0.35 * 7000 / SR), c = 2 * r * Math.cos(w);
+  let p = 0, q = 0;
+  for (let i = 0; i < n; i++) { const v = rrnd() + c * p - r * r * q; q = p; p = v; x[i] = v * 0.02; }
   return x;
 }
-
-const FLUTTER_CASES = [
-  ['steady noise',        0,  0],
-  ['modulated  20 Hz 60%', 20, 0.6],
-  ['modulated  40 Hz 60%', 40, 0.6],
-  ['modulated  40 Hz 100%', 40, 1.0],
-  ['modulated  80 Hz 80%', 80, 0.8],
-  ['modulated 160 Hz 80%', 160, 0.8],
-];
-
-console.log('   case                      cv     flutter');
-console.log('   ' + '-'.repeat(42));
-for (const [name, hz, depth] of FLUTTER_CASES) {
-  // average several frames, since each is one random draw
-  let cv = 0, fl = 0;
-  const reps = 12;
-  for (let i = 0; i < reps; i++) {
-    const t = temporal.analyze(noiseFrame(hz, depth));
-    cv += t.cv; fl += t.flutter;
+function roughOf(x) {
+  const t = createTemporalAnalyzer(SR, N), fr = new Float32Array(N), v = [];
+  for (let s = 0; s + N <= x.length; s += HOP) {
+    fr.set(x.subarray(s, s + N));
+    const r = t.analyze(fr);
+    if (s > SR * 0.6) v.push(r.rough);
   }
-  console.log('   ' + name.padEnd(24) + (cv / reps).toFixed(3).padStart(6) + '   ' + (fl / reps).toFixed(3).padStart(6));
+  v.sort((p, q) => p - q);
+  const at = (p) => v[Math.min(v.length - 1, Math.floor(p * (v.length - 1)))];
+  return { med: at(0.5), p90: at(0.9) };
+}
+const ROUGH_CASES = [
+  ['clean /a/  80 Hz', () => vowelSignal(80), (r) => r.p90 < 0.1],
+  ['clean /a/ 100 Hz', () => vowelSignal(100), (r) => r.p90 < 0.1],
+  ['clean /a/ 120 Hz', () => vowelSignal(120), (r) => r.p90 < 0.1],
+  ['clean /a/ 180 Hz', () => vowelSignal(180), (r) => r.p90 < 0.1],
+  ['clean /a/ 250 Hz', () => vowelSignal(250), (r) => r.p90 < 0.1],
+  ['steady hiss (/s/-like)', () => hissSignal(), (r) => r.p90 < 0.1],
+  ['voiced uvular R, F0 110', () => vowelSignal(110, { trill: 30, noise: 0.4 }), (r) => r.med > 0.4],
+  ['voiced uvular R, F0 200', () => vowelSignal(200, { trill: 30, noise: 0.4 }), (r) => r.med > 0.4],
+  ['voiced gurgle 70/s', () => vowelSignal(100, { trill: 70, noise: 0.4 }), (r) => r.med > 0.4],
+];
+console.log('   case                        median    p90');
+console.log('   ' + '-'.repeat(44));
+for (const [name, make, want] of ROUGH_CASES) {
+  const r = roughOf(make());
+  const ok = want(r);
+  if (!ok) failures++;
+  console.log('   ' + name.padEnd(26) + r.med.toFixed(2).padStart(8) + r.p90.toFixed(2).padStart(7) + (ok ? '' : '   <-- FAIL'));
 }
 
 /* ---------------------------------------------------------------- */

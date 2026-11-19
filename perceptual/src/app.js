@@ -42,6 +42,21 @@ const ui = {
 
 /** A sound has to clear the measured room by this much to be drawn. */
 const GATE_DB = 6;
+
+/**
+ * The automatic capture at startup, in seconds and in frames -- it ends when
+ * BOTH have been satisfied.
+ *
+ * Seconds because a frame count is not a duration. A browser throttles
+ * animation callbacks hard when its window is not the one in front, and at
+ * the couple of frames a second that produces, a capture of "45 frames" is a
+ * capture of half a minute, with the app showing nothing at all the whole
+ * time and no sign of why. Frames because the median underneath needs a
+ * population to be a median of, and a slow machine must not be given a floor
+ * estimated from three frames.
+ */
+const STARTUP_SECONDS = 0.9;
+const STARTUP_FRAMES = 10;
 const ROOM_LABEL = 'Press and hold to record the room';
 const MIN_HOLD_SECONDS = 0.4;
 
@@ -53,6 +68,7 @@ let mic = null, floor = null, model = null, dims = null, mod = null;
 let renderer = null;
 let running = false;
 let raf = 0, lastT = 0, colAcc = 0;
+let startupUntil = 0, startupFrames = 0;
 
 /** Smoothed display state. */
 const sm = {
@@ -146,6 +162,14 @@ function tick(now) {
   // The room capture consumes raw frames and nothing downstream runs while
   // it does -- measuring during a capture would measure the room.
   if (floor.learn(power)) {
+    if (startupUntil) {
+      startupFrames++;
+      if (startupFrames >= STARTUP_FRAMES && performance.now() >= startupUntil) {
+        floor.endHold(true);
+        startupUntil = 0;
+        ui.banner.hidden = true;
+      }
+    }
     renderer.draw({ active: false, level: 0 }, dt);
     return;
   }
@@ -255,8 +279,10 @@ async function start() {
   ui.startWrap.hidden = true;
   ui.stage.hidden = false;
   running = true;
-  floor.startLearn(45);
-  showBanner('Listening to the room for a moment…', 1600);
+  floor.beginHold();
+  startupUntil = performance.now() + STARTUP_SECONDS * 1000;
+  startupFrames = 0;
+  showBanner('Listening to the room for a moment…', 0);
   lastT = 0;
   raf = requestAnimationFrame(tick);
 }

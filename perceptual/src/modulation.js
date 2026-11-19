@@ -26,6 +26,8 @@
  * 12 Hz before any downstream setting can be chosen.
  */
 
+import { createPitchTracker } from './pitch.js';
+
 const EPS = 1e-20;
 
 /** Samples discarded while the envelope filters settle. */
@@ -46,24 +48,32 @@ const ROUGH_HZ = [40, 70, 110];
 const ROUGH_W = [0.6, 1.0, 0.7];
 
 /**
- * Reference rates, flanking the roughness band on both sides. Roughness is
- * measured as a PEAK against these, not as an absolute modulation depth, and
- * that choice is what makes the measure usable at all.
+ * Roughness is scored on modulation DEPTH -- how deeply the envelope rises
+ * and falls in the band, as a fraction of its level -- after the voice's own
+ * pulse has been removed (see removePitchLocked).
  *
- * Noise modulates itself. A band of noise with no modulation imposed on it
- * still has a wandering envelope, and how much depends on how wide the band
- * is -- which varies from one fricative to the next and from one child to the
- * next. An absolute depth therefore reads a steady /s/ as half rough before
- * anything is wrong with it. Dividing by the modulation energy at rates
- * nobody would call rough cancels that: self-modulation is flat across rate,
- * so the ratio sits at one for any steady noise of any bandwidth, and only a
- * real concentration near 70 Hz lifts it.
+ * It used to be scored as a ratio against reference rates either side of the
+ * band, to cancel the self-modulation every noise has. That hid exactly the
+ * sound it was meant to show. A trill is not a smooth wobble but a train of
+ * sharp interruptions, and sharp pulses put energy at every rate, references
+ * included, so the trill cancelled its own score: a synthetic uvular R had
+ * depth 0.67 and ratio 2.3, which displayed as 0.1. Measured on real
+ * recordings and synthetic sounds, depth separates them where the ratio did
+ * not:
+ *
+ *   clean vowels, synthetic                   0.01
+ *   real vowels, 90th percentile              0.09 - 0.26
+ *   real /s/ and /sh/, 90th percentile        0.30 - 0.32
+ *   voiced uvular R beating 30/s, median      0.57 - 0.67
+ *   voiced gurgle at 70/s, median             0.72
+ *
+ * The floor sits above what smooth sounds reach on their own, including
+ * the fade at the end of a vowel once the envelope is detrended.
  */
-const REF_HZ = [25, 180, 240, 300, 360];
-
-/** Ratio at which roughness starts to count, and where it reads full. */
-const ROUGH_FLOOR = 1.70;
-const ROUGH_FULL = 7.0;
+const DEPTH_FLOOR = 0.32;
+/** Periodicity above which the voice's pulse is taken out of the envelope. */
+const REMOVE_MIN_PERIODICITY = 0.45;
+const DEPTH_FULL = 0.75;
 
 /**
  * Fluctuation: a one-pole bracket, geometric centre near 3-4 Hz. Built from
@@ -77,9 +87,6 @@ const FLUCT_AVG_TAU = 0.6;
 const FLUCT_FULL = 0.34;
 const FLUCT_FLOOR = 0.03;
 
-/** Voice range, wide enough for a small child at the top. */
-const F0_MIN = 70;
-const F0_MAX = 420;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -88,6 +95,8 @@ export function createModulation(sampleRate) {
   const envK = 1 - Math.exp(-2 * Math.PI * ENV_HZ / sampleRate);
 
   let env = null;
+  const tracker = createPitchTracker(sampleRate);
+  let tmpl = null, tcount = null;
   let work = null;    // detrended, windowed copy of the envelope
   let win = null;     // Hann window, rebuilt only if the span changes
 
@@ -135,64 +144,62 @@ export function createModulation(sampleRate) {
         win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
       }
     }
-    for (let i = 0; i < n; i++) work[i] = (src[from + i] - mean) * win[i];
+    // Remove the straight-line trend, not just the mean. A sound fading in or
+    // out changes level across the 36 ms window, and a ramp has its energy at
+    // the lowest rates -- right on the 40 Hz probe. With only the mean taken
+    // out, every vowel ending read as rough, up to 0.8.
+    const c = (n - 1) / 2;
+    let sxy = 0, sxx = 0;
+    for (let i = 0; i < n; i++) {
+      const dx = i - c;
+      sxy += dx * (src[from + i] - mean);
+      sxx += dx * dx;
+    }
+    const slope = sxx > 0 ? sxy / sxx : 0;
+    for (let i = 0; i < n; i++) {
+      work[i] = (src[from + i] - mean - slope * (i - c)) * win[i];
+    }
     return work;
   }
 
   /**
-   * Autocorrelation pitch with an octave guard. The guard is the whole
-   * difficulty: the correlation at twice the true period is very nearly as
-   * strong as at the period itself, so taking the maximum reports half the
-   * real F0 on perfectly ordinary voices. Prefer the SHORTEST lag that is a
-   * local peak and close to the best one.
+   * Remove the part of the envelope that repeats at the voice's own pitch.
+   *
+   * A voiced sound's energy above 2 kHz arrives as one burst per glottal
+   * cycle, so its envelope is a pulse train at F0. For an adult voice that
+   * lands on the 70 and 110 Hz probes and reads as raggedness -- real vowels
+   * read up to 0.5 here as the pitch fell toward 100 Hz. Averaging the
+   * envelope over every whole period in the frame gives the shape of one
+   * cycle; subtracting that, cycle by cycle, leaves whatever is NOT locked to
+   * the pitch. A trill, which beats at its own rate, survives. The voice
+   * does not.
+   *
+   * This only works with a pitch estimate that can be trusted, which is why
+   * it arrived together with the YIN tracker in pitch.js: the old
+   * autocorrelation tracker made octave errors on a fifth of real vowel
+   * frames, and removing the wrong period would remove nothing.
    */
-  function periodicity(time) {
-    const n = time.length;
-    let mean = 0;
-    for (let i = 0; i < n; i++) mean += time[i];
-    mean /= n;
-
-    let energy = 0;
-    for (let i = 0; i < n; i++) {
-      const v = time[i] - mean;
-      energy += v * v;
+  function removePitchLocked(e, from, to, period) {
+    const span = to - from;
+    if (!(period > 8) || span < 2 * period) return;
+    const len = Math.ceil(period);
+    if (!tmpl || tmpl.length < len) { tmpl = new Float64Array(len); tcount = new Uint16Array(len); }
+    tmpl.fill(0, 0, len); tcount.fill(0, 0, len);
+    for (let i = from; i < to; i++) {
+      const j = Math.floor((i - from) % period);
+      tmpl[j] += e[i]; tcount[j]++;
     }
-    if (energy < 1e-12) return { r: 0, f0: 0 };
-
-    const minLag = Math.max(2, Math.floor(sampleRate / F0_MAX));
-    const maxLag = Math.min(n - 2, Math.floor(sampleRate / F0_MIN));
-    if (maxLag <= minLag) return { r: 0, f0: 0 };
-
-    const corr = new Float32Array(maxLag + 1);
-    let best = 0;
-    for (let lag = minLag; lag <= maxLag; lag++) {
-      let s = 0;
-      for (let i = 0; i < n - lag; i++) {
-        s += (time[i] - mean) * (time[i + lag] - mean);
-      }
-      const r = s / energy;
-      corr[lag] = r;
-      if (r > best) best = r;
+    let tmean = 0, used = 0;
+    for (let j = 0; j < len; j++) {
+      if (tcount[j]) { tmpl[j] /= tcount[j]; tmean += tmpl[j]; used++; }
     }
-    if (best <= 0) return { r: 0, f0: 0 };
-
-    let chosen = -1;
-    for (let lag = minLag + 1; lag < maxLag; lag++) {
-      if (corr[lag] >= 0.88 * best &&
-          corr[lag] >= corr[lag - 1] && corr[lag] >= corr[lag + 1]) {
-        chosen = lag;
-        break;
-      }
+    tmean /= Math.max(1, used);
+    // Mean added back, so the envelope's level -- which fluctuation and the
+    // normalisation both use -- is untouched.
+    for (let i = from; i < to; i++) {
+      const j = Math.floor((i - from) % period);
+      e[i] -= tmpl[j] - tmean;
     }
-    if (chosen < 0) return { r: best, f0: 0 };
-
-    // Parabolic interpolation, worth it: without it F0 lands on whichever
-    // integer lag is nearest, which at 300 Hz is a quantisation of ~20 Hz.
-    const y0 = corr[chosen - 1], y1 = corr[chosen], y2 = corr[chosen + 1];
-    const denom = y0 - 2 * y1 + y2;
-    const shift = denom !== 0 ? 0.5 * (y0 - y2) / denom : 0;
-    const lag = chosen + Math.max(-1, Math.min(1, shift));
-    return { r: corr[chosen], f0: sampleRate / lag };
   }
 
   return {
@@ -217,12 +224,22 @@ export function createModulation(sampleRate) {
         env[i] = e;
       }
 
+      // Pitch first: it decides what to take out of the envelope. The bar is
+      // deliberately lower than the voicing verdict. As a vowel dies away its
+      // periodicity drops below that verdict while its pulse is still in the
+      // envelope, and leaving the pulse in made vowel endings flare to 0.8.
+      // A noise frame such as /s/ sits near 0.3 and is left alone.
+      const pitch = tracker.analyze(time);
+      if (pitch.periodicity >= REMOVE_MIN_PERIODICITY && pitch.candidateHz > 0) {
+        removePitchLocked(env, SETTLE, n, sampleRate / pitch.candidateHz);
+      }
+
       const span = n - SETTLE;
       let mean = 0;
       for (let i = SETTLE; i < n; i++) mean += env[i];
       mean /= span;
 
-      let rough = 0, roughRatio = 0;
+      let rough = 0, roughDepth = 0;
       if (mean > EPS && span > 64) {
         const w = prepare(env, SETTLE, span, mean);
         let acc = 0, wsum = 0;
@@ -230,13 +247,10 @@ export function createModulation(sampleRate) {
           acc += ROUGH_W[j] * goertzel(w, span, ROUGH_HZ[j]);
           wsum += ROUGH_W[j];
         }
-        let ref = 0;
-        for (let j = 0; j < REF_HZ.length; j++) {
-          ref += goertzel(w, span, REF_HZ[j]);
-        }
-        ref /= REF_HZ.length;
-        roughRatio = ref > EPS ? (acc / wsum) / ref : 0;
-        rough = clamp01((roughRatio - ROUGH_FLOOR) / (ROUGH_FULL - ROUGH_FLOOR));
+        // Goertzel amplitude, doubled for the Hann window's coherent gain of
+        // a half, as a fraction of the envelope level.
+        roughDepth = 2 * (acc / wsum) / mean;
+        rough = clamp01((roughDepth - DEPTH_FLOOR) / (DEPTH_FULL - DEPTH_FLOOR));
       }
 
       // Fluctuation, across frames. One envelope sample per frame, bracketed
@@ -255,7 +269,6 @@ export function createModulation(sampleRate) {
       const fluctIndex = slow > EPS ? Math.sqrt(msAc) / slow : 0;
       const fluct = clamp01((fluctIndex - FLUCT_FLOOR) / (FLUCT_FULL - FLUCT_FLOOR));
 
-      const { r, f0 } = periodicity(time);
 
       let rms = 0;
       for (let i = 0; i < n; i++) rms += time[i] * time[i];
@@ -263,10 +276,12 @@ export function createModulation(sampleRate) {
 
       return {
         rough,
-        roughRatio,
+        roughDepth,
         fluct,
-        periodicity: r,
-        f0Hz: f0,
+        periodicity: pitch.periodicity,
+        aperiodicity: pitch.aperiodicity,
+        voiced: pitch.voiced,
+        f0Hz: pitch.f0Hz,
         rms,
         hfMean: mean,
       };

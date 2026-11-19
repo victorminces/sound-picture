@@ -81,12 +81,67 @@ is measured within a frame** (Goertzel probes on the detrended, windowed
 envelope) and **fluctuation across frames** (a one-pole bracket whose
 coefficients come from elapsed time, so a throttled tab detunes nothing).
 
-Roughness is a **peak against neighbouring rates**, not an absolute modulation
-depth. Noise modulates itself, and how much depends on its bandwidth, which
-varies from one fricative and one child to the next. Measuring depth directly
-read a perfectly steady /s/ as half rough. Dividing by the modulation energy at
-rates nobody would call rough cancels it, because self-modulation is flat
-across rate.
+### How roughness is scored, and how it got here
+
+Roughness is the **modulation depth** of the high-band envelope — how deeply it
+rises and falls between 40 and 110 Hz, as a fraction of its level — after two
+things have been taken out of it: the voice's own pulse, and any straight-line
+fade. Both were found on real and synthetic sounds, not reasoned out.
+
+**The voice's own pulse.** A vowel's energy above 2 kHz arrives as one burst
+per glottal cycle, so its envelope is a pulse train at the pitch. For an adult
+voice (85–140 Hz) that sits right in the roughness band, and clean vowels drew
+grainy: a real /i/ read up to 0.51 as its pitch fell. Each frame is now averaged
+over its whole pitch periods to get the shape of one cycle, and that shape is
+subtracted cycle by cycle. Whatever is not locked to the pitch — a trill beats
+at its own rate — survives. This needs a pitch estimate that can be trusted,
+which is why it arrived with the YIN tracker below.
+
+**Depth, not a ratio.** Roughness used to be a peak divided by the modulation
+at reference rates either side of the band, to cancel the self-modulation every
+noise has. That hid exactly the sound it was meant to show. A trill is a train
+of sharp interruptions, sharp pulses put energy at every rate including the
+references, and the trill cancelled its own score: a synthetic voiced uvular R
+had depth 0.67 and ratio 2.3, which displayed as 0.1. Depth separates them:
+
+```
+                                  depth, median / 90th percentile
+clean vowels, synthetic           0.01 / 0.01
+real vowels                       0.04-0.09 / 0.09-0.34
+real /s/ and /sh/                 0.12-0.14 / 0.31-0.36
+voiced uvular R, beating 30/s     0.56-0.63 / 0.86-1.00
+```
+
+The floor sits at 0.32, above what smooth sounds reach on their own.
+
+**Fades.** A sound fading in or out changes level across the frame, and a ramp
+puts its energy at the lowest rates, on the 40 Hz probe. The envelope is
+detrended with a straight line, not just its mean.
+
+## Pitch
+
+YIN (de Cheveigné and Kawahara, 2002) replaces plain autocorrelation, with two
+additions: an octave guard, which prefers half the period when that dip is
+nearly as good — YIN's normalisation favours the doubled period while the
+amplitude is changing, so a vowel onset read an octave low — and continuity in
+the spirit of pYIN, which scores the octave neighbours against the previous
+frame so one noisy frame cannot jump an octave.
+
+Checked against Praat and pYIN on real recordings, on frames where those two
+agree:
+
+```
+                       gross errors (more than a quarter octave out)
+old autocorrelation    22.3%   (mostly octave errors)
+YIN alone               5.9%   (octave low at onsets)
+YIN + guard            11-24%  (octave high without continuity)
+YIN + guard + cont.     0.3%
+```
+
+On synthetic vowels with an exactly known contour, 70 to 580 Hz, it makes no
+gross errors and is typically within 4–10 cents. The old tracker failed on 31%
+of frames at 400 Hz and all of them at 500 Hz, which is where small children's
+voices are.
 
 ## What was verified offline
 
@@ -103,25 +158,23 @@ level independence    -50 dBFS 3.96   -40 3.89   -30 3.84   -20 3.80
 /s/ 3.84   palatal 2.94   /sh/ 2.66   vowel 0.94
 focused hiss 3.50 Bark   broad slushy 5.56 Bark
 
-roughness vs. rate    steady 0.02   4 Hz 0.00   50 Hz 0.23   70 Hz 0.76
-                                    100 Hz 0.62   150 Hz 0.00   250 Hz 0.00
-fluctuation vs. rate  2 Hz 0.77   4 Hz 0.81   8 Hz 0.59   30 Hz+ 0.00
-roughness vs. depth   0% 0.02   15% 0.10   30% 0.35   50% 0.67   80% 0.88
+roughness             clean /a/, 80-320 Hz       0.00
+                      voiced uvular R, 30/s      0.83-1.00
+                      voiced gurgle, 70/s        0.59
+                      steady hiss                0.00
+fluctuation           4/s wobble 0.77            70/s wobble 0.00
 ```
 
-The two temporal dimensions are cleanly orthogonal: roughness reads zero across
-the whole fluctuation band and vice versa. In a browser check, sharpness was
-identical (3.74) for the same /s/ with and without 70 Hz modulation, so the
-spectral and temporal dimensions do not contaminate each other either.
+`tools/probe-pitch.mjs` checks the pitch tracker against a known contour.
 
-### The voicing confound, and why it went away
+Real recordings (Wikimedia Commons IPA samples — three vowels, /s/, /ʃ/) all
+read 0.00 roughness at the median and the 90th percentile. They are not in the
+repository.
 
-A voiced fricative is modulated at F0 by the glottis. If F0 lands in the
-roughness band — an adult man at 110 Hz — an absolute measure cannot tell that
-from a wet production, and an early version read 0.69 for exactly that case.
-The ratio formulation fixed it incidentally: a pulse train puts harmonics into
-the reference rates as well as the roughness band, so the ratio stays near one.
-The same case now reads 0.04.
+The two temporal dimensions are orthogonal: roughness reads zero across the
+fluctuation band and vice versa. In a browser check, sharpness was identical
+(3.74) for the same /s/ with and without 70 Hz modulation, so the spectral and
+temporal dimensions do not contaminate each other either.
 
 ## A finding worth recording
 
@@ -147,8 +200,14 @@ standing. A hold too short to trust restores the previous profile whole.
 
 ## Limitations
 
-- **Never used with a child.** The roughness constants are calibrated against
-  synthetic modulated noise, nothing real.
+- **Never used with a child.** Roughness is checked against real vowels and
+  sibilants, but the trills it is meant to show are synthetic. No real French R
+  or lateral production has been measured offline yet.
+- A breathy vowel ending — the voice turning into breath, quiet — can still
+  read rough for a frame or two. It is genuine turbulence, not the voice pulse,
+  so it was left rather than tuned away.
+- A perfectly smooth sinusoidal wobble on hiss scores low (about 0.1). It is a
+  laboratory stimulus, not speech; scoring it higher made a clean /s/ sparkle.
 - Numbers are comparable **within a session**, not across children or devices.
   There is no absolute calibration and no child-specific normalisation, and
   children's sibilants sit much higher and vary much more than adults'.
@@ -170,6 +229,7 @@ then open `http://localhost:5174/perceptual/`. A server is required:
 ```
 node tools/probe-spectral.mjs
 node tools/probe-modulation.mjs
+node tools/probe-pitch.mjs
 ```
 
 needs no microphone and no browser.

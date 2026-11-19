@@ -115,7 +115,7 @@ export function createRenderer(canvas) {
    * residue became visible. Where vowels sit depends on the voice, so it is a
    * control rather than a constant.
    */
-  let grainThreshold = 0.3;
+  let grainThreshold = 0;
 
   /** Raggedness as the display should draw it: zero up to the threshold. */
   function grainOf(rough) {

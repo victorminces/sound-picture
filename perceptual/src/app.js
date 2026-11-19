@@ -263,7 +263,7 @@ function tick(now) {
   if (loud) {
     show('sharpness', m.sharpness.toFixed(2));
     show('spread', m.spreadBark.toFixed(2) + ' Bark');
-    show('rough', t.rough.toFixed(2) + '  (×' + t.roughRatio.toFixed(1) + ')');
+    show('rough', t.rough.toFixed(2) + '  (depth ' + t.roughDepth.toFixed(2) + ')');
     show('fluct', t.fluct.toFixed(2));
     show('voicing', voicing.toFixed(2));
     show('f0', voicing > 0.25 && t.f0Hz > 0 ? Math.round(t.f0Hz) + ' Hz' : '—');

@@ -256,19 +256,30 @@ Both are replaced with what was developed and checked in the perceptual app
 - **The gate.** Grain now follows `f.loud` — there is sound — rather than the
   sibilant gate. Vowels no longer need keeping out by gating; they read zero
   on their own.
-- **The drawing.** Light flecks and dark pits, square, about 4.5 CSS pixels,
-  in place of opacity scaled up and down per column (which clipped in bright
-  regions and read as vertical streaks). Raggedness rises in 25 ms and falls in
-  50, and flecks fade in between 0.05 and 0.20, so an R's grain stops at the R
-  instead of trailing into the next vowel.
+- **The drawing**, made to match the perceptual app's exactly: light flecks
+  three quarters of the way to white and dark pits of the background colour,
+  4 CSS pixels square, visible from the first hint of raggedness, with more and
+  stronger flecks as it rises. They are drawn in a layer of their own without
+  image smoothing (the 420 x 128 history is smoothed as it is stretched, which
+  blurred flecks drawn into it), and across the whole of whatever the column
+  draws rather than only its brightest bands, so a quieter R is not left bare.
+  The live shape on the right shows the same grain, as the perceptual app's orb
+  does. Raggedness rises in 25 ms and falls in 50; as in the perceptual app, an
+  R's grain trails about 0.2 s into the next vowel as it decays.
 
-Measured in `tools/grain-check.html` on four spoken a-R-a and a held R:
+Measured in `tools/grain-check.html`, the same speech drawn with and without
+grain:
 
 ```
-                                   before     after
-grain added to each R              x1.00      x1.74 - x3.08
-grain added to the vowels          0.000      0.000 - 0.001
+                                  before     after
+trilled R, as loud as the vowel   x1.00      x3.7 - x6.5
+trilled R, 10 dB quieter          x1.00      x1.7 - x4.3
+vowels, beyond the 0.2 s trail    0.000      0.000
 ```
+
+A synthetic *fricative* R (noise over weak voicing, irregular flutter) reads
+near zero on the measure itself, so the drawing has nothing to show for it;
+a real French R reads clearly in the perceptual app.
 
 This app's own pitch, voicing, gate and F0 line are unchanged; YIN is used only
 inside the roughness measure.

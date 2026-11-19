@@ -118,84 +118,101 @@ export function createRenderer(canvas) {
   }
 
   /**
-   * Grain cells, in strip pixels, sized so a cell is about GRAIN_CSS_PX on
-   * screen whatever the window size, and square. The strip is 420 x 128 and is
-   * stretched to the field, so a strip pixel is two to three CSS pixels; the
-   * old grain was one column wide and three bands tall, which read as vertical
-   * streaks rather than texture.
+   * Grain, drawn the way the perceptual app draws it (perceptual/src/viz.js),
+   * so the two look the same: light flecks three quarters of the way to white
+   * and dark pits of the background colour, about 4 CSS pixels square, plainly
+   * visible from the first hint of raggedness, with more and stronger flecks
+   * as it rises. Same constants, same rule.
+   *
+   * It lives in a layer of its own, the same size as the history strip and
+   * scrolled with it, and is drawn without image smoothing. The history strip
+   * is 420 x 128 and is smoothed as it is stretched to the field, which is
+   * right for the spectrogram but blurred flecks drawn into it into soft
+   * smudges. And flecks go wherever the column is drawn, at full strength
+   * however loud the sound is -- as the perceptual app puts them across its
+   * whole ribbon -- rather than only where the spectrogram is bright, which
+   * left a quieter R almost bare.
    */
-  const GRAIN_CSS_PX = 4.5;
-  let grainU = new Float32Array(SPEC_BANDS), grainS = new Int8Array(SPEC_BANDS);
+  const GRAIN_CSS_PX = 4;
+  const GRAIN_MIN = 0.02;
+  const FLECK_WHITE = 0.75;
+  const BG_RGB = [11, 17, 32];          // PANEL_BG
+  const grainStrength = (rg) => Math.min(1, 0.25 + 0.7 * Math.min(1, rg * 0.8));
+  const grainCoverage = (rg) => 1 - Math.exp(-(0.9 + 2.2 * rg) / Math.PI);
+
+  const grainStrip = document.createElement('canvas');
+  grainStrip.width = HIST;
+  grainStrip.height = SPEC_BANDS;
+  const gctx = grainStrip.getContext('2d');
+  const gcol = gctx.createImageData(1, SPEC_BANDS);
+  const colInk = new Float32Array(SPEC_BANDS);
+  const grainU = new Float32Array(SPEC_BANDS), grainS = new Int8Array(SPEC_BANDS);
   let grainCol = 0;
 
   /** Push one moment into the scrolling history. */
   function pushColumn(spectrum, cogPos, rough, voicing, f0Hz) {
-    sctx.globalCompositeOperation = 'copy';
-    sctx.drawImage(strip, -1, 0);
-    sctx.globalCompositeOperation = 'source-over';
-
-    // Grain is drawn as flecks -- light ones three quarters of the way to
-    // white, and dark pits where the background shows through -- the rule
-    // the perceptual app arrived at after measuring it. Two earlier versions
-    // failed: scaling opacity up and down clipped every brighter cell back to
-    // 1.0 wherever the spectrogram is already bright, so half the texture
-    // vanished where the eye goes first; and shading in proportion to the
-    // measure, from zero, left moderate raggedness -- what real speech has --
-    // too faint to see. Flecks are plainly visible from the first hint of
-    // raggedness, and more raggedness means more of them and stronger ones.
-    const rg = Math.max(0, Math.min(1, rough || 0));
-    // Flecks fade in between raggedness 0.05 and 0.20 rather than appearing
-    // at full visibility the moment it passes zero. An R's raggedness takes a
-    // moment to decay after the R ends, and with the instant switch-on that
-    // decay stayed plainly visible about 180 ms into the following vowel,
-    // measured; the fade-in halves that and leaves an R (0.55-1.0) untouched.
-    const ramp = Math.max(0, Math.min(1, (rg - 0.05) / 0.15));
-    const on = ramp > 0;
-    const strength = on ? Math.min(1, 0.25 + 0.7 * Math.min(1, rg * 0.8)) * ramp : 0;
-    const coverage = on ? 1 - Math.exp(-(0.9 + 2.2 * rg) / Math.PI) : 0;
-    const colPx = field.w > 0 ? field.w / HIST : 2.4;
-    const rowPx = field.h > 0 ? field.h / SPEC_BANDS : 2.8;
-    const cellC = Math.max(1, Math.round(GRAIN_CSS_PX / colPx));
-    const cellR = Math.max(1, Math.round(GRAIN_CSS_PX / rowPx));
-    if (on && grainCol % cellC === 0) {
-      for (let i = 0; i < SPEC_BANDS; i++) {
-        grainU[i] = Math.random();
-        grainS[i] = Math.random() < 0.5 ? -1 : 1;
-      }
+    for (const [c, k] of [[sctx, strip], [gctx, grainStrip]]) {
+      c.globalCompositeOperation = 'copy';
+      c.drawImage(k, -1, 0);
+      c.globalCompositeOperation = 'source-over';
     }
-    grainCol++;
 
+    // The spectrogram column, exactly as before the grain existed.
     const d = col.data;
+    let inkMax = 0;
     for (let r = 0; r < SPEC_BANDS; r++) {
       const band = SPEC_BANDS - 1 - r;
       const v = ink(spectrum[band]);
+      colInk[r] = v;
+      if (v > inkMax) inkMax = v;
       const [cr, cg, cb] = rampAt(band / (SPEC_BANDS - 1));
       const glow = v * v * v * v * 0.5;
-      let R = cr + (255 - cr) * glow;
-      let G = cg + (255 - cg) * glow;
-      let B = cb + (255 - cb) * glow;
-      let A = Math.pow(v, 1.1);
-
-      const ci = (r / cellR) | 0;
-      if (on && A > 0.1 && grainU[ci] < coverage) {
-        // Only where the sound is visibly drawn, as the perceptual app's
-        // flecks stay inside its ribbon.
-        const s = strength * Math.min(1, (A - 0.1) / 0.3);
-        if (grainS[ci] > 0) {
-          const A2 = A + (1 - A) * s;
-          R = (R * A * (1 - s) + (R + (255 - R) * 0.75) * s) / A2;
-          G = (G * A * (1 - s) + (G + (255 - G) * 0.75) * s) / A2;
-          B = (B * A * (1 - s) + (B + (255 - B) * 0.75) * s) / A2;
-          A = A2;
-        } else {
-          A *= 1 - s;
-        }
-      }
       const o = r * 4;
-      d[o] = R; d[o + 1] = G; d[o + 2] = B;
-      d[o + 3] = Math.round(Math.max(0, Math.min(1, A)) * 255);
+      d[o]     = cr + (255 - cr) * glow;
+      d[o + 1] = cg + (255 - cg) * glow;
+      d[o + 2] = cb + (255 - cb) * glow;
+      d[o + 3] = Math.round(Math.pow(v, 1.1) * 255);
     }
     sctx.putImageData(col, HIST - 1, 0);
+
+    // The grain column.
+    const g = gcol.data;
+    g.fill(0);
+    const rg = Math.max(0, Math.min(1, rough || 0));
+    if (rg > GRAIN_MIN && inkMax > 0.02) {
+      const strength = grainStrength(rg), coverage = grainCoverage(rg);
+      const colPx = field.w > 0 ? field.w / HIST : 2.4;
+      const rowPx = field.h > 0 ? field.h / SPEC_BANDS : 2.8;
+      const cellC = Math.max(1, Math.round(GRAIN_CSS_PX / colPx));
+      const cellR = Math.max(1, Math.round(GRAIN_CSS_PX / rowPx));
+      if (grainCol % cellC === 0) {
+        for (let i = 0; i < SPEC_BANDS; i++) {
+          grainU[i] = Math.random();
+          grainS[i] = Math.random() < 0.5 ? -1 : 1;
+        }
+      }
+      for (let r = 0; r < SPEC_BANDS; r++) {
+        // Where this column is drawn, relative to its own brightest band --
+        // the counterpart of the ribbon's profile in the perceptual app.
+        const rel = colInk[r] / inkMax;
+        if (rel < 0.1) continue;
+        const ci = (r / cellR) | 0;
+        if (grainU[ci] >= coverage) continue;
+        const a = strength * Math.min(1, (rel - 0.1) / 0.3);
+        const o = r * 4;
+        if (grainS[ci] > 0) {
+          const [cr, cg, cb] = rampAt((SPEC_BANDS - 1 - r) / (SPEC_BANDS - 1));
+          g[o] = cr + (255 - cr) * FLECK_WHITE;
+          g[o + 1] = cg + (255 - cg) * FLECK_WHITE;
+          g[o + 2] = cb + (255 - cb) * FLECK_WHITE;
+        } else {
+          g[o] = BG_RGB[0]; g[o + 1] = BG_RGB[1]; g[o + 2] = BG_RGB[2];
+        }
+        g[o + 3] = Math.round(a * 255);
+      }
+    }
+    grainCol++;
+    gctx.putImageData(gcol, HIST - 1, 0);
 
     cogHist[w] = cogPos;
     voiceHist[w] = voicing || 0;
@@ -227,6 +244,11 @@ export function createRenderer(canvas) {
     }
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
+
+    // Grain on top, unsmoothed, so the flecks stay crisp.
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(grainStrip, field.x, field.y, field.w, field.h);
+    ctx.imageSmoothingEnabled = true;
 
     drawF0Trace();
     if (showCog) drawCogTrace();
@@ -348,7 +370,7 @@ export function createRenderer(canvas) {
     ctx.closePath();
   }
 
-  function drawShape(spectrum, reference, notch) {
+  function drawShape(spectrum, reference, notch, rough) {
     const cx = shape.x + shape.w / 2;
     const halfMax = shape.w * 0.46;
 
@@ -394,6 +416,30 @@ export function createRenderer(canvas) {
     ctx.lineWidth = 1.2;
     ctx.stroke();
 
+    // The live sound's grain, drawn as the perceptual app's orb draws it:
+    // flecks re-scattered every frame, light ones and dark pits, at the same
+    // density per area and strength as the history's, inside the shape.
+    const rg = Math.max(0, Math.min(1, rough || 0));
+    if (rg > GRAIN_MIN) {
+      ctx.save();
+      shapePath(smoothed, cx, halfMax);
+      ctx.clip();
+      const sz = GRAIN_CSS_PX, a = grainStrength(rg);
+      const n = Math.min(1500, Math.round((shape.w * shape.h) / (sz * sz) * (0.9 + 2.2 * rg) / Math.PI));
+      for (let i = 0; i < n; i++) {
+        const x = shape.x + Math.random() * shape.w;
+        const y = shape.y + Math.random() * shape.h;
+        if (i & 1) {
+          const [cr, cg, cb] = rampAt((shape.y + shape.h - y) / shape.h);
+          ctx.fillStyle = `rgba(${Math.round(cr + (255 - cr) * FLECK_WHITE)},${Math.round(cg + (255 - cg) * FLECK_WHITE)},${Math.round(cb + (255 - cb) * FLECK_WHITE)},${a})`;
+        } else {
+          ctx.fillStyle = `rgba(${BG_RGB[0]},${BG_RGB[1]},${BG_RGB[2]},${a})`;
+        }
+        ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+      }
+      ctx.restore();
+    }
+
     // Notch marker: detected unsmoothed, drawn as a symbol.
     if (notch) {
       const y = shape.y + (1 - specPos(notch.hz)) * shape.h;
@@ -438,7 +484,7 @@ export function createRenderer(canvas) {
 
     drawField(s.opts.showCog);
     drawAxis();
-    drawShape(s.spectrum, s.reference, s.notch);
+    drawShape(s.spectrum, s.reference, s.notch, s.rough);
 
     if (s.referenceLabel) {
       ctx.font = `700 10px ${FONT}`;
@@ -450,6 +496,7 @@ export function createRenderer(canvas) {
 
   function clearHistory() {
     sctx.clearRect(0, 0, HIST, SPEC_BANDS);
+    gctx.clearRect(0, 0, HIST, SPEC_BANDS);
     cogHist.fill(-1);
     voiceHist.fill(0);
     f0Hist.fill(0);

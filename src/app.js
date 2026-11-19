@@ -246,6 +246,7 @@ function tick(dt, now) {
   smRoughRaw += (t.rough - smRoughRaw) * (1 - Math.exp(-dt / (t.rough > smRoughRaw ? 0.025 : 0.050)));
 
   state.notch = f.notch;
+  state.rough = smRough;
 
   // Lay the history down on a clock, not on the frame rate, so the time axis
   // stays honest on a slow machine.

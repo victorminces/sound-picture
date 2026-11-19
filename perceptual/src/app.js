@@ -36,7 +36,6 @@ const ui = {
     sharpness: el('oSharp'),
     spread: el('oSpread'),
     rough: el('oRough'),
-    roughRate: el('oRoughRate'),
     fluct: el('oFluct'),
     voicing: el('oVoice'),
     f0: el('oF0'),
@@ -209,7 +208,7 @@ function tick(now) {
 
   floor.subtract(power);
   const m = dims.measure(model.pattern(power));
-  const t = mod.analyze(mic.timeData);
+  const t = mod.analyze(mic.timeData, dt);
 
   // Loudness is relative to this child's own recent speech. There is no
   // absolute reference available from a web microphone and pretending
@@ -256,16 +255,12 @@ function tick(now) {
     show('sharpness', m.sharpness.toFixed(2));
     show('spread', m.spreadBark.toFixed(2) + ' Bark');
     show('rough', t.rough.toFixed(2) + '  (×' + t.roughRatio.toFixed(1) + ')');
-    // The rate is the point of rebuilding this: a trill pulsing 30 times a
-    // second and a wet fricative near 70 are different things, and until the
-    // window was long enough to resolve them they were the same number.
-    show('roughRate', t.rough > 0.05 ? Math.round(t.roughRate) + ' /s' : '—');
     show('fluct', t.fluct.toFixed(2));
     show('voicing', voicing.toFixed(2));
     show('f0', voicing > 0.25 && t.f0Hz > 0 ? Math.round(t.f0Hz) + ' Hz' : '—');
     show('loudness', level.toFixed(2));
   } else {
-    for (const k of ['sharpness', 'spread', 'rough', 'roughRate', 'fluct', 'voicing', 'f0', 'loudness']) {
+    for (const k of ['sharpness', 'spread', 'rough', 'fluct', 'voicing', 'f0', 'loudness']) {
       show(k, '—');
     }
   }
@@ -296,24 +291,7 @@ async function start() {
   pushGrainContrast();
   renderer.setMap(ui.mapToggle.checked);
 
-  // The worklet feeds the envelope; without it the texture dimensions have
-  // no input at all. Say so rather than quietly showing zeros, which would
-  // read as "this child's speech is perfectly smooth".
-  if (mic.worklet && mic.worklet.ok) {
-    mic.worklet.node.port.onmessage = (ev) => {
-      const m = ev.data;
-      if (!m) return;
-      if (m.type === 'ready') mod.setEnvRate(m.envRate);
-      else if (m.type === 'env') mod.pushEnvelope(m.data);
-    };
-  }
-
   const notes = [];
-  if (!mic.worklet || !mic.worklet.ok) {
-    notes.push('this browser would not start the envelope worklet, so '
-      + 'roughness and fluctuation cannot be measured ('
-      + ((mic.worklet && mic.worklet.error) || 'unknown reason') + ')');
-  }
   if (mic.anyProcessingOn) {
     notes.push('the browser is still applying noise suppression or gain control, '
       + 'which reshapes exactly what this measures');

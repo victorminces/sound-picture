@@ -108,6 +108,19 @@ export function createRenderer(canvas) {
   let grainPx = 4;
   /** 0..1, how far toward white or black a cell goes at full raggedness. */
   let grainContrast = 0.8;
+  /**
+   * Raggedness below this draws no grain at all. A clean vowel is not
+   * perfectly smooth to the measurement -- a low voice's own pulse leaves a
+   * small residue -- and once the grain was drawn at full contrast that
+   * residue became visible. Where vowels sit depends on the voice, so it is a
+   * control rather than a constant.
+   */
+  let grainThreshold = 0.3;
+
+  /** Raggedness as the display should draw it: zero up to the threshold. */
+  function grainOf(rough) {
+    return clamp01((rough - grainThreshold) / (1 - grainThreshold));
+  }
   let grainCells = null;
   let grainCol = 0;
 
@@ -185,7 +198,7 @@ export function createRenderer(canvas) {
     // Grain cells are square and held across as many columns as they are
     // tall, so the texture reads as a weave rather than as vertical streaks.
     const cell = Math.max(1, Math.round(grainPx * dpr));
-    const rough = f.rough;
+    const rough = grainOf(f.rough);
     if (rough > 0) {
       const n = Math.ceil(stripH / cell) + 1;
       if (!grainCells || grainCells.length !== n) grainCells = new Float32Array(n);
@@ -287,7 +300,8 @@ export function createRenderer(canvas) {
       ctx.arc(cx, cy, rad, 0, Math.PI * 2);
       ctx.fill();
 
-      if (f.rough > 0.02) {
+      const rg = grainOf(f.rough);
+      if (rg > 0.02) {
         // Speckle sized from the same control as the ribbon's grain, and
         // counted from the area it has to cover so the density stays put as
         // the orb grows with loudness.
@@ -295,8 +309,8 @@ export function createRenderer(canvas) {
         // they sit on were nearly invisible inside it; light flecks and dark
         // pits of the disc's own hue are not.
         const sz = Math.max(2, grainPx);
-        const n = Math.min(500, Math.round((rad * rad) / (sz * sz) * (0.9 + 2.2 * f.rough)));
-        const k = clamp01(f.rough * grainContrast);
+        const n = Math.min(500, Math.round((rad * rad) / (sz * sz) * (0.9 + 2.2 * rg)));
+        const k = clamp01(rg * grainContrast);
         const lr = Math.round(r + (255 - r) * 0.75);
         const lg = Math.round(g + (255 - g) * 0.75);
         const lb = Math.round(b + (255 - b) * 0.75);
@@ -364,6 +378,7 @@ export function createRenderer(canvas) {
     setRange(lo, hi) { sharpLo = lo; sharpHi = hi; },
     setGrain(px) { grainPx = Math.max(1, px); grainCells = null; },
     setGrainContrast(v) { grainContrast = clamp01(v); },
+    setGrainThreshold(v) { grainThreshold = Math.min(0.9, Math.max(0, v)); },
     /** Advance the history by one column. Kept apart from draw() so that the
      *  ribbon scrolls at a rate set by the clock rather than by however often
      *  the machine happens to repaint. */

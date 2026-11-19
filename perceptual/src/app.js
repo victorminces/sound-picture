@@ -32,6 +32,8 @@ const ui = {
   grainOut: el('grainOut'),
   grainContrast: el('grainContrast'),
   grainContrastOut: el('grainContrastOut'),
+  grainThreshold: el('grainThreshold'),
+  grainThresholdOut: el('grainThresholdOut'),
   out: {
     sharpness: el('oSharp'),
     spread: el('oSpread'),
@@ -161,6 +163,13 @@ function pushGrainContrast() {
 }
 ui.grainContrast.addEventListener('input', pushGrainContrast);
 
+function pushGrainThreshold() {
+  const v = Number(ui.grainThreshold.value);
+  ui.grainThresholdOut.textContent = v.toFixed(2);
+  if (renderer) renderer.setGrainThreshold(v);
+}
+ui.grainThreshold.addEventListener('input', pushGrainThreshold);
+
 ui.clearBtn.addEventListener('click', () => { if (renderer) renderer.clear(); });
 ui.mapToggle.addEventListener('change', () => {
   if (renderer) renderer.setMap(ui.mapToggle.checked);
@@ -289,6 +298,7 @@ async function start() {
   pushRange();
   pushGrain();
   pushGrainContrast();
+  pushGrainThreshold();
   renderer.setMap(ui.mapToggle.checked);
 
   const notes = [];

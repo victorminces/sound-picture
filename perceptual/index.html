@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sound Dimensions</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <h1>Sound Dimensions</h1>
+  <p class="sub">
+    A picture of how a sound is heard, not of how it was recorded. One ribbon,
+    five properties. No targets and no score &mdash; the therapist reads it and
+    guides from it.
+  </p>
+</header>
+
+<main>
+  <div id="startWrap" class="start-wrap">
+    <button id="start" class="primary">Turn on the microphone</button>
+    <p class="hint">
+      Nothing is recorded or sent anywhere. Everything is measured in the
+      browser and thrown away as it goes.
+    </p>
+  </div>
+
+  <section id="stage" hidden>
+    <div class="field-wrap">
+      <canvas id="field"></canvas>
+      <div id="banner" class="banner" hidden></div>
+      <div class="field-labels">
+        <span>then</span><span class="now">now</span><span class="self">the sound itself</span>
+      </div>
+    </div>
+
+    <div class="panels">
+      <div class="panel">
+        <h2>The room</h2>
+        <button id="roomBtn" class="hold">Press and hold to record the room</button>
+        <p class="hint">
+          Hold it for a second or two in a quiet moment. Whatever the microphone
+          hears during the hold &mdash; a fan, a projector, the building &mdash;
+          stops contributing to the picture and to the numbers. Do it again
+          whenever the room changes.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>Picture</h2>
+        <label for="rangeLo">Sharpness range <span class="hint">the span of the vertical axis</span></label>
+        <div class="row">
+          <input id="rangeLo" type="range" min="0" max="3" step="0.1" value="0.5">
+          <input id="rangeHi" type="range" min="3" max="6" step="0.1" value="5">
+          <output id="rangeOut">0.5 – 5.0</output>
+        </div>
+        <p class="hint">
+          The axis is deliberately fixed rather than self-scaling. An axis that
+          rescales itself makes every production look the same and destroys the
+          one thing this display is for, which is comparing one with another.
+        </p>
+        <label class="check"><input id="mapToggle" type="checkbox"> Therapist map</label>
+        <button id="clearBtn" class="ghost">Clear the trail</button>
+      </div>
+
+      <div class="panel wide">
+        <h2>Measurements</h2>
+        <dl class="measures">
+          <div><dt>Sharpness</dt><dd id="oSharp">—</dd></div>
+          <div><dt>Spread</dt><dd id="oSpread">—</dd></div>
+          <div><dt>Roughness</dt><dd id="oRough">—</dd></div>
+          <div><dt>Fluctuation</dt><dd id="oFluct">—</dd></div>
+          <div><dt>Voicing</dt><dd id="oVoice">—</dd></div>
+          <div><dt>F0</dt><dd id="oF0">—</dd></div>
+          <div><dt>Loudness</dt><dd id="oLoud">—</dd></div>
+          <div><dt>Above room floor</dt><dd id="oMargin">—</dd></div>
+        </dl>
+      </div>
+    </div>
+
+    <p id="status" class="status"></p>
+  </section>
+
+  <section class="reading">
+    <h2>Reading the ribbon</h2>
+    <dl>
+      <div>
+        <dt>Height &mdash; sharpness</dt>
+        <dd>
+          How high the sound sits, in the sense a listener means by it: a
+          squeaky hiss against a deep one. This is the dimension that separates
+          /s/ from a palatal or /sh/-like production, and it gets the vertical
+          axis because position is the channel a child reads most easily.
+          Measured as a weighted centre of the <em>specific loudness</em>
+          pattern, which is near enough level-independent &mdash; a quiet /s/
+          and a loud one sit at the same height.
+        </dd>
+      </div>
+      <div>
+        <dt>Thickness &mdash; loudness</dt>
+        <dd>
+          Relative to this child&rsquo;s own recent speech, never to an absolute
+          standard. A web microphone reports no calibrated level, so an absolute
+          number here would be invented.
+        </dd>
+      </div>
+      <div>
+        <dt>Softness &mdash; spread</dt>
+        <dd>
+          A focused hiss has a crisp edge; one smeared across the range feathers
+          out. Measured in Bark, the unit in which the ear&rsquo;s resolution is
+          roughly constant, so a sound reads as wide because it <em>is</em> wide
+          and not merely because it sits high.
+        </dd>
+      </div>
+      <div>
+        <dt>Grain &mdash; roughness</dt>
+        <dd>
+          Fast speckle, around 70 modulations a second: too quick to hear as
+          separate events, so it fuses into a buzzy, gurgly, wet quality. This
+          is the strongest candidate for the slushiness of a lateral release.
+          It is measured as a <em>peak</em> at that rate against the modulation
+          at neighbouring rates, not as an absolute depth, because noise
+          modulates itself and how much depends on how broad it is.
+        </dd>
+      </div>
+      <div>
+        <dt>Ripple &mdash; fluctuation</dt>
+        <dd>
+          A slow waver in the edge, around 4 times a second: a gesture that will
+          not hold still. A different percept from grain and an order of
+          magnitude slower, which is why they are measured separately and shown
+          separately.
+        </dd>
+      </div>
+      <div>
+        <dt>Core &mdash; voicing</dt>
+        <dd>
+          A bright filament down the middle of the ribbon, brighter the more
+          clearly the larynx is running. /s/ has none; /z/ has a strong one.
+        </dd>
+      </div>
+    </dl>
+    <p class="caveat">
+      These are <strong>perceptual</strong> dimensions &mdash; properties of how
+      a sound is heard. They are deliberately not claims about where the tongue
+      is. Inferring articulation from a microphone alone is a guess, and a
+      display that makes it confidently would be lying. What is shown here is
+      what a listener is responding to, which is also what every clinical rating
+      and every labelled speech corpus is built on.
+    </p>
+    <p class="caveat">
+      Nothing here has been tried with a child, and the roughness constants are
+      calibrated against synthetic modulated noise rather than a real lateral
+      production. Treat the numbers as comparable within a session and not
+      across children.
+    </p>
+  </section>
+</main>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>

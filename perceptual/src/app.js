@@ -13,6 +13,7 @@ import { createAuditoryModel } from './auditory.js';
 import { createDimensions } from './dimensions.js';
 import { createModulation } from './modulation.js';
 import { createRenderer } from './viz.js';
+import { createSmoother } from './smooth.js';
 
 const el = (id) => document.getElementById(id);
 const ui = {
@@ -77,9 +78,7 @@ let raf = 0, lastT = 0, colAcc = 0;
 let startupUntil = 0, startupFrames = 0;
 
 /** Smoothed display state. */
-const sm = {
-  sharpness: 2.0, spread: 0.5, level: 0, rough: 0, fluct: 0, voicing: 0,
-};
+const smoother = createSmoother();
 let peakLoud = 1e-6;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -229,24 +228,9 @@ function tick(now) {
   const voicing = loud ? clamp01((t.periodicity - 0.40) / 0.32) : 0;
   const spread = clamp01((m.spreadBark - SPREAD_LO) / (SPREAD_HI - SPREAD_LO));
 
-  const aFast = 1 - Math.exp(-dt / 0.035);
-  const aSlow = 1 - Math.exp(-dt / 0.090);
-  if (loud) sm.sharpness += (m.sharpness - sm.sharpness) * aSlow;
-  sm.spread += (spread - sm.spread) * aSlow;
-  sm.level += (level - sm.level) * aFast;
-  sm.rough += (t.rough - sm.rough) * aSlow;
-  sm.fluct += (t.fluct - sm.fluct) * aSlow;
-  sm.voicing += (voicing - sm.voicing) * aFast;
-
-  const frame = {
-    active: loud,
-    level: sm.level,
-    sharpness: sm.sharpness,
-    spread: sm.spread,
-    rough: sm.rough,
-    fluct: sm.fluct,
-    voicing: sm.voicing,
-  };
+  const frame = smoother.step(dt, loud, {
+    sharpness: m.sharpness, spread, level, rough: t.rough, fluct: t.fluct, voicing,
+  });
 
   // One history column per fixed slice of time, not per animation frame, so
   // the ribbon scrolls at the same speed whatever the machine manages. The

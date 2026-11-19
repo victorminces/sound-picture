@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grain check</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background: #070a13; color: #c9d4ee; font: 13px/1.5 ui-monospace, Consolas, monospace; padding: 16px; margin: 0; }
+  canvas { display: block; width: 1000px; max-width: 100%; height: 300px; border-radius: 12px; background: #080b16; margin: 8px 0 16px; }
+  pre { white-space: pre-wrap; }
+  .pass { color: #7fe3a0; } .fail { color: #ff9a9a; }
+</style>
+</head>
+<body>
+<h1 style="font: 600 16px system-ui">Grain check: does the history show what the orb shows?</h1>
+<p>Runs the real measurement and the real renderer. Open via the dev server at
+<code>/perceptual/tools/grain-check.html</code>.</p>
+<canvas id="c"></canvas>
+<pre id="out">running…</pre>
+<script type="module">
+/**
+ * The rule being checked: if the live orb shows grain, the history behind it
+ * must show grain as clearly, and where the orb is smooth the history must be
+ * smooth too.
+ *
+ * "Grain" is measured the same way in both places: in the luminance of the
+ * drawn pixels, the mean absolute departure from a local average one grain
+ * cell wide, as a fraction of the mean luminance -- local texture contrast.
+ * The value at raggedness 0 is subtracted, so the orb's smooth radial
+ * gradient and the ribbon's soft edges do not count as grain.
+ */
+const { createRenderer } = await import(new URLSearchParams(location.search).get('viz') || '../src/viz.js');
+import { createSmoother } from '../src/smooth.js';
+import { createModulation } from '../src/modulation.js';
+
+const SR = 48000, N = 2048, HOP = 800, DT = HOP / SR;
+const canvas = document.getElementById('c');
+const out = document.getElementById('out');
+const lines = [];
+const log = (s = '') => { lines.push(s); out.textContent = lines.join('\n'); };
+
+function texture(x0, y0, w, h, cell) {
+  const ctx = canvas.getContext('2d');
+  x0 = Math.max(0, Math.round(x0)); y0 = Math.max(0, Math.round(y0));
+  w = Math.min(canvas.width - x0, Math.round(w)); h = Math.min(canvas.height - y0, Math.round(h));
+  if (w < 4 || h < 4) return { tex: 0, mean: 0 };
+  const px = ctx.getImageData(x0, y0, w, h).data;
+  const L = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) L[i] = 0.2126 * px[i * 4] + 0.7152 * px[i * 4 + 1] + 0.0722 * px[i * 4 + 2];
+  // Integral image for a box average one cell wide.
+  const I = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) { row += L[y * w + x]; I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row; }
+  }
+  const r = Math.max(1, Math.round(cell));
+  let dev = 0, sum = 0, n = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const xa = Math.max(0, x - r), xb = Math.min(w, x + r + 1), ya = Math.max(0, y - r), yb = Math.min(h, y + r + 1);
+    const box = (I[yb * (w + 1) + xb] - I[ya * (w + 1) + xb] - I[yb * (w + 1) + xa] + I[ya * (w + 1) + xa]) / ((xb - xa) * (yb - ya));
+    dev += Math.abs(L[y * w + x] - box); sum += L[y * w + x]; n++;
+  }
+  const mean = sum / n;
+  return { tex: mean > 1 ? dev / n / mean : 0, mean };
+}
+
+/**
+ * Texture of two bands, one above and one below the voicing line, averaged.
+ * The line itself is excluded: it is a bright stripe, not grain, and a vowel
+ * has a stronger one than an R, so including it gave vowels a false texture.
+ */
+function bands(x, yMid, w, near, far, cell) {
+  const a = texture(x, yMid - far, w, far - near, cell);
+  const b = texture(x, yMid + near, w, far - near, cell);
+  return { tex: (a.tex + b.tex) / 2, mean: (a.mean + b.mean) / 2 };
+}
+
+/** Texture in the core of the ribbon, between `agoA` and `agoB` seconds ago. */
+function historyTexture(r, f, agoA, agoB) {
+  // The history only reaches the screen in draw(); measure what is shown.
+  r.draw(f, DT);
+  const g = r.geometry(f), cell = 4 * g.dpr;
+  const xa = g.ribbonRightDev - agoA * g.colsPerSec, xb = g.ribbonRightDev - agoB * g.colsPerSec;
+  return bands(xa, g.ribbonYDev, xb - xa, g.ribbonHalfDev * 0.15, g.ribbonHalfDev * 0.5, cell);
+}
+
+/** Texture in the middle of the orb, averaged over several redraws (it sparkles). */
+function orbTexture(r, f) {
+  let t = 0, m = 0;
+  for (let k = 0; k < 6; k++) {
+    r.draw(f, DT);
+    const g = r.geometry(f), s = g.orbRad * 0.5;
+    const q = bands((g.orbCx - s) * g.dpr, g.orbCy * g.dpr, 2 * s * g.dpr,
+      g.orbRad * 0.12 * g.dpr, s * g.dpr, 4 * g.dpr);
+    t += q.tex; m += q.mean;
+  }
+  return { tex: t / 6, mean: m / 6 };
+}
+
+function makeRenderer() {
+  const r = createRenderer(canvas);
+  r.resize(); r.setRange(0.5, 5.0); r.setGrain(4); r.setGrainContrast(0.8); r.setGrainThreshold(0);
+  return r;
+}
+
+/** Exactly app.js's scrolling: whole columns, capped at a quarter second. */
+function scroller(r) {
+  let acc = 0;
+  return (f) => {
+    acc += DT * r.colsPerSec;
+    const cap = Math.ceil(r.colsPerSec * 0.25);
+    const k = Math.min(cap, Math.floor(acc));
+    acc = Math.min(acc - k, 1);
+    r.advance(f, DT, k);
+  };
+}
+
+const RF = { active: true, level: 0.6, sharpness: 1.5, spread: 0.55, fluct: 0, voicing: 0.5 };
+const VF = { active: true, level: 0.85, sharpness: 1.0, spread: 0.35, fluct: 0, voicing: 0.9 };
+
+/* ---------------- 1. steady raggedness ---------------- */
+function steady() {
+  log('1. STEADY RAGGEDNESS -- grain contrast above the smooth baseline');
+  log('   raggedness    orb     history    history / orb');
+  const rows = [];
+  let base = null;
+  for (const rough of [0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0]) {
+    const r = makeRenderer(), push = scroller(r), f = { ...RF, rough };
+    for (let t = 0; t < 3; t += DT) push(f);
+    const h = historyTexture(r, f, 2.0, 0.2).tex, o = orbTexture(r, f).tex;
+    // The same history measured through the narrow slices test 3 has to use
+    // for short sounds, to show how much the narrow ruler itself reads low.
+    let hn = 0;
+    for (let k = 0; k < 8; k++) hn += historyAt(r, f, 0, -(0.3 + 0.2 * k), 0.02) / 8;
+    if (!base) base = { h, o, hn };
+    rows.push({ rough, orb: o - base.o, hist: h - base.h, narrow: hn - base.hn });
+  }
+  let pass = true;
+  for (const x of rows) {
+    const ratio = x.orb > 0.01 ? x.hist / x.orb : NaN;
+    const ok = x.rough === 0 ? Math.abs(x.hist) < 0.02 : (x.rough < 0.2 || ratio >= 0.85);
+    if (!ok) pass = false;
+    log('   ' + x.rough.toFixed(1).padEnd(12) + x.orb.toFixed(3).padStart(6) + x.hist.toFixed(3).padStart(10) +
+      (isNaN(ratio) ? '        -' : ratio.toFixed(2).padStart(13)) +
+      (x.orb > 0.01 ? ('   narrow-slice ruler: ' + (x.narrow / x.orb).toFixed(2)) : '') + (ok ? '' : '   <-- FAIL'));
+  }
+  log('   ' + (pass ? 'PASS' : 'FAIL') + ': history must be at least 0.85x the orb from raggedness 0.2 up\n');
+  return pass;
+}
+
+/* ---------------- synthetic speech through the real measurement ---------------- */
+let seed = 5;
+const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff * 2 - 1; };
+function resonate(x, fc, bw) {
+  const r = Math.exp(-Math.PI * bw / SR), c = 2 * r * Math.cos(2 * Math.PI * fc / SR);
+  const y = new Float32Array(x.length); let a = 0, b = 0;
+  for (let i = 0; i < x.length; i++) { const v = x[i] + c * a - r * r * b; b = a; a = v; y[i] = v; }
+  return y;
+}
+/** Segments of vowel ('a'), voiced uvular R ('R'), or silence ('-'). */
+function speech(segs, f0 = 110) {
+  const n = Math.round(segs.reduce((s, x) => s + x[1], 0) * SR);
+  const src = new Float32Array(n); let next = 0;
+  for (let i = 0; i < n; i++) if (i >= next) { src[i] = 1; next = i + (SR / f0) * (1 + 0.006 * rnd()); }
+  const v = new Float32Array(n);
+  for (const [fc, bw, g] of [[700, 90, 1], [1220, 110, 0.6], [2600, 160, 0.25], [3500, 220, 0.15]]) {
+    const p = resonate(src, fc, bw); for (let i = 0; i < n; i++) v[i] += g * p[i];
+  }
+  let pk = 0; for (const s of v) pk = Math.max(pk, Math.abs(s));
+  const y = new Float32Array(n), kind = [];
+  let i0 = 0;
+  for (const [k, len] of segs) {
+    const i1 = Math.min(n, i0 + Math.round(len * SR));
+    for (let i = i0; i < i1; i++) {
+      let s = v[i] / pk * 0.1;
+      if (k === 'R') { s += 0.008 * rnd(); const ph = (i * 30 / SR) % 1; s *= 0.05 + 0.95 * Math.exp(-6 * ph); }
+      if (k === '-') s = 0.0005 * rnd();
+      y[i] = s;
+    }
+    kind.push([k, i0 / SR, i1 / SR]); i0 = i1;
+  }
+  return { y, kind };
+}
+
+/**
+ * Run speech through modulation.js and the app's own smoother (smooth.js)
+ * into the renderer. Sharpness, spread and level come from the segment rather
+ * than the spectral model, which is not what is under test here; raggedness
+ * and voicing come from the real measurement.
+ */
+function play(r, sig, onFrame) {
+  const push = scroller(r), mod = createModulation(SR), smoother = createSmoother(), fr = new Float32Array(N);
+  let f = null, now = 0;
+  const frames = [];
+  for (let s = 0; s + N <= sig.y.length; s += HOP) {
+    fr.set(sig.y.subarray(s, s + N));
+    const t = mod.analyze(fr, DT);
+    now = (s + N) / SR;
+    const seg = sig.kind.find(([, a, b]) => now >= a && now < b) || ['-'];
+    const tgt = seg[0] === 'R' ? RF : seg[0] === 'a' ? VF : null;
+    const loud = !!tgt;
+    f = smoother.step(DT, loud, {
+      sharpness: loud ? tgt.sharpness : 0, spread: loud ? tgt.spread : 0, level: loud ? tgt.level : 0,
+      rough: t.rough, fluct: 0,
+      voicing: loud ? Math.max(0, Math.min(1, (t.periodicity - 0.40) / 0.32)) : 0,
+    });
+    push(f);
+    frames.push({ now, f: { ...f }, seg: seg[0] });
+    if (onFrame) onFrame(now, f, t, frames);
+  }
+  return { f, end: now, frames };
+}
+
+/**
+ * History texture around the moment `t`, at the height and thickness the
+ * ribbon actually had then -- short sounds never reach their target height,
+ * so a fixed band would partly miss them.
+ */
+function historyAt(r, fr, end, t, half = 0.03) {
+  return historyTexture(r, fr, end - (t - half), end - (t + half)).tex;
+}
+
+/* ---------------- 2. held R ---------------- */
+function heldR() {
+  log('2. VOWEL, HELD R, VOWEL -- real measurement, app smoothing, real renderer');
+  const r = makeRenderer();
+  const sig = speech([['a', 1.0], ['R', 2.0], ['a', 1.0]]);
+  const orb = { R: [], V: [] };
+  let n = 0;
+  const run = play(r, sig, (now, f) => {
+    if (++n % 3) return;
+    if (now > 0.3 && now < 0.85) orb.V.push(orbTexture(r, f).tex);
+    if (now > 1.3 && now < 2.7) orb.R.push(orbTexture(r, f).tex);
+  });
+  const mean = (v) => v.reduce((a, b) => a + b, 0) / v.length;
+  const at = (lo, hi) => run.frames.filter((x, i) => i % 3 === 0 && x.now > lo && x.now < hi)
+    .map((x) => historyAt(r, x.f, run.end, x.now));
+  const hR = mean(at(1.3, 2.7)), hV = mean([...at(0.3, 0.85), ...at(3.3, 3.85)]);
+  const oR = mean(orb.R), oV = mean(orb.V);
+  log('   orb grain during the R     ' + (oR - oV).toFixed(3));
+  log('   history grain under the R  ' + (hR - hV).toFixed(3));
+  const ratio = (hR - hV) / (oR - oV);
+  const pass = ratio >= 0.85;
+  log('   history / orb = ' + ratio.toFixed(2) + '   ' + (pass ? 'PASS' : 'FAIL') + ' (needs 0.85)\n');
+  return pass;
+}
+
+/* ---------------- 3. a-R-a three times ---------------- */
+function syllables() {
+  log('3. "a-R-a" EIGHT TIMES -- what the orb showed during each R, the history must keep');
+  const r = makeRenderer();
+  const segs = [];
+  // Eight, not three: each short R covers only about six grain cells of
+  // history, both views are drawn from random patterns, and three runs of
+  // three Rs scattered from 0.75 to 0.94. The average is what is judged.
+  for (let k = 0; k < 8; k++) segs.push(['a', 0.4], ['R', 0.2], ['a', 0.4], ['-', 0.25]);
+  const sig = speech(segs);
+  const Rs = sig.kind.filter(([k]) => k === 'R'), As = sig.kind.filter(([k]) => k === 'a');
+  // Each R as it appears on screen: from just after it starts until just
+  // after it ends, allowing for the 43 ms analysis frame.
+  const win = Rs.map(([, a, b]) => [a + 0.03, b + 0.04]);
+  const vwin = As.map(([, a, b]) => [a + 0.12, b - 0.05]);
+  const orbDuring = Rs.map(() => []);
+  const orbClean = [];
+  const histR = Rs.map(() => null), histV = As.map(() => null);
+  const mean = (v) => v.reduce((a, b) => a + b, 0) / v.length;
+  // History measured shortly after each sound is drawn, while it is still on
+  // screen: eight repetitions take ten seconds and the history holds six.
+  const hist = (frames, end, lo, hi) => mean(frames.filter((x) => x.now >= lo && x.now <= hi)
+    .map((x) => historyAt(r, x.f, end, x.now, 0.02)));
+  let n = 0;
+  play(r, sig, (now, f, t, frames) => {
+    win.forEach(([a, b], i) => { if (histR[i] === null && now > b + 0.3) histR[i] = hist(frames, now, a, b); });
+    vwin.forEach(([a, b], i) => { if (histV[i] === null && now > b + 0.3) histV[i] = hist(frames, now, a, b); });
+    if (++n % 2) return;
+    // The first vowel has no R before it: that is what clean looks like.
+    if (now > As[0][1] + 0.1 && now < As[0][2] - 0.05) orbClean.push(orbTexture(r, f).tex);
+    win.forEach(([a, b], i) => { if (now >= a && now <= b) orbDuring[i].push(orbTexture(r, f).tex); });
+  });
+  const clean = histV[0];
+  const oClean = mean(orbClean);
+
+  let pass = true;
+  const ratios = [];
+  win.forEach(([a, b], i) => {
+    const h = histR[i] - clean, o = mean(orbDuring[i]) - oClean, ratio = h / o;
+    ratios.push(ratio);
+    const ok = ratio >= 0.6;
+    if (!ok) pass = false;
+    log('   R #' + (i + 1) + '   orb during it ' + o.toFixed(3) + '   history ' + h.toFixed(3) +
+      '   history / orb ' + ratio.toFixed(2) + (ok ? '' : '   <-- FAIL, this R nearly vanished'));
+  });
+  const avg = mean(ratios);
+  if (avg < 0.85) pass = false;
+  log('   average history / orb over all Rs: ' + avg.toFixed(2) + (avg >= 0.85 ? '' : '   <-- FAIL'));
+  // Every vowel after the first one follows an R. Its middle must look like
+  // the first vowel, not carry the R's grain on.
+  As.slice(1).forEach((_, i) => {
+    const v = histV[i + 1] - clean;
+    const ok = v < 0.02;
+    if (!ok) pass = false;
+    log('   vowel #' + (i + 2) + ' grain above a clean vowel: ' + v.toFixed(3) + (ok ? '' : '   <-- FAIL, carries the R on'));
+  });
+  log('   ' + (pass ? 'PASS' : 'FAIL') + ': Rs keep 0.85x of the orb on average, none below 0.6; vowels after an R stay clean\n');
+  return pass;
+}
+
+window.runGrainCheck = () => {
+  lines.length = 0;
+  const a = steady(), b = heldR(), c = syllables();
+  log((a && b && c) ? 'ALL PASS' : 'SOMETHING FAILED');
+  return { steady: a, heldR: b, syllables: c, text: lines.join('\n') };
+};
+window.runGrainCheck();
+</script>
+</body>
+</html>

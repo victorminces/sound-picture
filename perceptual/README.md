@@ -189,6 +189,36 @@ audible at all. Since the clinical ground truth is perceptual, a cue a listener
 cannot hear is the wrong cue, and that is an argument for leaning on roughness
 for laterality rather than on spectral shape.
 
+## The history keeps what the orb shows
+
+If the live orb shows grain, the history behind it must show it as clearly.
+Three things stood in the way, each found by measuring both views in
+`tools/grain-check.html`:
+
+- **Time.** The history scrolled a fixed number of columns a second, which on a
+  2x screen held about thirty seconds; a spoken R got about 7 pixels. It now
+  holds six seconds edge to edge, whatever the screen.
+- **Drawing.** The orb draws flecks that are plainly visible from the first hint
+  of raggedness; the history shaded in proportion to it, from zero. At the
+  raggedness a spoken R reaches, the history showed a quarter to a half of the
+  orb's grain. Both now use one rule: light flecks three quarters of the way to
+  white and dark pits, covering a share of the surface that grows with
+  raggedness, each starting at a quarter opacity.
+- **Smoothing.** Raggedness was smoothed with one 90 ms time constant, so an R's
+  grain spilled a fifth of a second into the next vowel and a short R never
+  reached full strength. It now rises in 25 ms and falls in 50 ms.
+
+Same checks, renderer before and after:
+
+```
+                                         before      after
+steady raggedness 0.2 / 0.4, history/orb  0.50/0.78   1.04-1.24
+held R, end to end                        0.94        1.18-1.33
+eight spoken a-R-a, average               0.67        0.89-1.0
+  weakest single R                        0.50        0.72
+vowels after an R                         clean       clean
+```
+
 ## The room
 
 Press and hold to capture it. Two statistics come out of one capture and they
@@ -233,3 +263,10 @@ node tools/probe-pitch.mjs
 ```
 
 needs no microphone and no browser.
+
+`http://localhost:5174/perceptual/tools/grain-check.html` checks the display
+rather than the measurement: synthetic speech goes through the real
+measurement, the app's smoother and the real renderer, and the grain in the
+history is measured against the grain the live orb showed at the same moment.
+Adding `?viz=<path to another viz.js>` runs the same checks against a different
+renderer, for before-and-after comparisons.

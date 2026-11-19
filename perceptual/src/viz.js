@@ -63,23 +63,21 @@ function rampAt(t) {
 }
 
 /**
- * Grain is drawn by changing LIGHTNESS -- mixing a cell toward white or toward
- * black -- and never by changing opacity, for two reasons that compounded.
+ * Grain is drawn as flecks: light ones laid over the ribbon, three quarters
+ * of the way to white, and dark pits where the background shows through. Both
+ * views -- the live orb and the history -- use the same rule.
  *
- * The ribbon's core is already fully opaque, so a grain that multiplied
- * opacity could only ever make a cell dimmer there: every brighter cell was
- * clamped straight back to 1.0. Half the texture was discarded at exactly the
- * place the eye goes first. And a cell that is the same blue, merely more or
- * less see-through over near-black, is low contrast by construction. Light
- * and dark cells of the ribbon's own hue are not.
+ * Two earlier versions failed in instructive ways. Scaling opacity up and down
+ * clipped every brighter cell back to 1.0 in the ribbon's opaque core, so half
+ * the texture vanished where the eye goes first. Shading lightness in
+ * proportion to raggedness was linear from zero, so the moderate raggedness of
+ * real speech drew a quarter to a half as much grain in the history as the orb
+ * showed at the same moment.
  */
-function shapeGrain(u) {
-  // Uniform noise puts most cells near the middle, where they barely differ
-  // from the ribbon. Pushing them toward the two ends makes the pattern read
-  // as a texture rather than as a faint shimmer.
-  const s = 2 * u - 1;
-  return s < 0 ? -Math.sqrt(-s) : Math.sqrt(s);
-}
+/** Raggedness above which grain is drawn at all, in both views. */
+const ORB_GRAIN_MIN = 0.02;
+/** How far toward white a light fleck goes, in both views. */
+const FLECK_WHITE = 0.75;
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -126,7 +124,20 @@ export function createRenderer(canvas) {
     return clamp01((rough - grainThreshold) / (1 - grainThreshold));
   }
   let grainCells = null;
+  let grainSigns = null;
   let grainCol = 0;
+
+  /**
+   * The orb's grain rule, shared by both views. Once there is any raggedness
+   * at all the texture is plainly visible -- each fleck starts at a quarter
+   * opacity -- and more raggedness means more flecks and stronger ones. The
+   * history used to fade its grain in linearly from zero instead, so at the
+   * raggedness a spoken R actually reaches (0.4-0.65) it showed a quarter to a
+   * half of what the orb showed, measured.
+   */
+  function grainStrength(rough) { return clamp01(0.25 + 0.7 * clamp01(rough * grainContrast)); }
+  /** Share of cells that carry a fleck: what the orb's fleck count covers. */
+  function grainCoverage(rough) { return 1 - Math.exp(-(0.9 + 2.2 * rough) / Math.PI); }
 
   /** Recent productions, for the optional map. */
   const cloud = [];
@@ -212,8 +223,16 @@ export function createRenderer(canvas) {
     let fresh = false;
     if (rough > 0 && (!grainCells || grainCells.length !== n)) {
       grainCells = new Float32Array(n);
+      grainSigns = new Int8Array(n);
       fresh = true;
     }
+
+    // The history's grain follows exactly the orb's rule, so that whatever
+    // the orb shows the history keeps (tools/grain-check.html measures this).
+    const on = rough > ORB_GRAIN_MIN;
+    const strength = on ? grainStrength(rough) : 0;
+    const coverage = on ? grainCoverage(rough) : 0;
+    const lr = r + (255 - r) * FLECK_WHITE, lg = g + (255 - g) * FLECK_WHITE, lb = b + (255 - b) * FLECK_WHITE;
 
     if (!colImg || colImg.height !== stripH) colImg = stripCtx.createImageData(1, stripH);
     const d = colImg.data;
@@ -223,22 +242,31 @@ export function createRenderer(canvas) {
       d.fill(0);
       for (let y = 0; y < stripH; y++) {
         const dy = (y - yc) / sigma;
-        let a = Math.exp(-0.5 * dy * dy);
-        if (a < 0.004) continue;
+        const shape = Math.exp(-0.5 * dy * dy);
+        if (shape < 0.004) continue;
+        let A = clamp01(shape) * (0.35 + 0.65 * f.level);
         let cr = r, cg = g, cb = b;
-        if (rough > 0) {
-          const gv = grainCells[(y / cell) | 0] * rough * grainContrast;
-          if (gv > 0) {
-            cr += (255 - cr) * gv; cg += (255 - cg) * gv; cb += (255 - cb) * gv;
+        const ci = (y / cell) | 0;
+        if (on && grainCells[ci] < coverage) {
+          // Flecks live inside the visible body of the ribbon, as the orb's
+          // live inside its disc, not out in the faint feathered edge.
+          const s = strength * clamp01((shape - 0.1) / 0.3);
+          if (grainSigns[ci] > 0) {
+            // A light fleck laid over the ribbon at opacity s -- the same
+            // compositing the orb gets from drawing a fleck over its disc.
+            const A2 = A + (1 - A) * s;
+            cr = (r * A * (1 - s) + lr * s) / A2;
+            cg = (g * A * (1 - s) + lg * s) / A2;
+            cb = (b * A * (1 - s) + lb * s) / A2;
+            A = A2;
           } else {
-            const m = 1 + gv;
-            cr *= m; cg *= m; cb *= m;
+            // A dark pit: the background showing through.
+            A *= 1 - s;
           }
         }
-        a = clamp01(a) * (0.35 + 0.65 * f.level);
         const o = y * 4;
         d[o] = cr | 0; d[o + 1] = cg | 0; d[o + 2] = cb | 0;
-        d[o + 3] = Math.round(a * 255);
+        d[o + 3] = Math.round(A * 255);
       }
     }
 
@@ -254,7 +282,10 @@ export function createRenderer(canvas) {
       // Grain cells are square and held across as many columns as they are
       // tall, so the texture reads as a weave rather than as vertical streaks.
       if (rough > 0 && (fresh || grainCol % cell === 0)) {
-        for (let i = 0; i < n; i++) grainCells[i] = shapeGrain(Math.random());
+        for (let i = 0; i < n; i++) {
+          grainCells[i] = Math.random();
+          grainSigns[i] = Math.random() < 0.5 ? -1 : 1;
+        }
         fresh = false;
         built = false;
       }
@@ -325,21 +356,20 @@ export function createRenderer(canvas) {
       ctx.fill();
 
       const rg = grainOf(f.rough);
-      if (rg > 0.02) {
+      if (rg > ORB_GRAIN_MIN) {
         // Speckle sized from the same control as the ribbon's grain, and
         // counted from the area it has to cover so the density stays put as
-        // the orb grows with loudness.
-        // Two tones, as on the ribbon. Speckles the same colour as the disc
-        // they sit on were nearly invisible inside it; light flecks and dark
-        // pits of the disc's own hue are not.
+        // the orb grows with loudness. Two tones: light flecks and dark pits
+        // of the disc's own hue. Same rule as the history -- grainStrength and
+        // the coverage the count works out to -- so the two always agree.
         const sz = Math.max(2, grainPx);
         const n = Math.min(500, Math.round((rad * rad) / (sz * sz) * (0.9 + 2.2 * rg)));
-        const k = clamp01(rg * grainContrast);
-        const lr = Math.round(r + (255 - r) * 0.75);
-        const lg = Math.round(g + (255 - g) * 0.75);
-        const lb = Math.round(b + (255 - b) * 0.75);
-        const light = `rgba(${lr},${lg},${lb},${0.25 + 0.7 * k})`;
-        const dark = `rgba(8,11,22,${0.25 + 0.7 * k})`;
+        const s = grainStrength(rg);
+        const lr = Math.round(r + (255 - r) * FLECK_WHITE);
+        const lg = Math.round(g + (255 - g) * FLECK_WHITE);
+        const lb = Math.round(b + (255 - b) * FLECK_WHITE);
+        const light = `rgba(${lr},${lg},${lb},${s})`;
+        const dark = `rgba(8,11,22,${s})`;
         for (let i = 0; i < n; i++) {
           const ang = Math.random() * Math.PI * 2;
           const rr = rad * Math.sqrt(Math.random());
@@ -400,6 +430,24 @@ export function createRenderer(canvas) {
       cloud.length = 0;
     },
     setRange(lo, hi) { sharpLo = lo; sharpHi = hi; },
+    /**
+     * Where things are drawn for a given frame, for tools/grain-check.html,
+     * which measures the grain in the orb and in the history and needs to know
+     * where to look. Read-only; nothing in the app uses it.
+     */
+    geometry(f) {
+      const base = Math.min(orbW, H) * 0.5;
+      return {
+        dpr, W, H, ribW, orbW, stripW, stripH,
+        colsPerSec: Math.max(30, stripW / HISTORY_SECONDS),
+        ribbonRightDev: (ribW - 8) * dpr,
+        ribbonYDev: yStrip(f.sharpness),
+        ribbonHalfDev: (0.015 + 0.10 * f.level) * stripH,
+        orbCx: ribW + orbW / 2,
+        orbCy: yCss(f.sharpness),
+        orbRad: base * (0.10 + 0.42 * f.level),
+      };
+    },
     setGrain(px) { grainPx = Math.max(1, px); grainCells = null; },
     setGrainContrast(v) { grainContrast = clamp01(v); },
     setGrainThreshold(v) { grainThreshold = Math.min(0.9, Math.max(0, v)); },

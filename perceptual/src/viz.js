@@ -21,14 +21,18 @@
  */
 
 /**
- * Columns of history per second. The strip is sized to the ribbon's own
- * width in DEVICE pixels, so a column is a column is a pixel and nothing is
- * resampled on the way to the screen -- a fixed column count stretched across
- * a wide display softens exactly the fine grain that roughness is drawn with.
- * A wider window therefore holds more seconds rather than the same seconds
- * blurrier.
+ * How much time the history holds, edge to edge. The strip is sized in DEVICE
+ * pixels so nothing is resampled, and the scroll rate follows from this rather
+ * than being a fixed number of columns per second.
+ *
+ * It used to be a fixed 90 columns a second, which on a 2x screen is 45
+ * visible pixels a second and about thirty seconds of history across a laptop
+ * window. Speech is faster than that: a spoken R lasts a fifth of a second
+ * and got about 7 pixels, under two grain cells, so its texture never showed
+ * in the history even while the live orb was plainly grainy. Six seconds is
+ * a short phrase, as in the spectrogram app, and gives that R about 40.
  */
-const COLS_PER_SEC = 90;
+const HISTORY_SECONDS = 6;
 
 /** Cool to warm, deep to bright. Violet at the bottom, cream at the top. */
 const RAMP = [
@@ -168,20 +172,25 @@ export function createRenderer(canvas) {
     return H - clamp01(t) * H;
   }
 
+  let colImg = null;
+
   /**
-   * Push one column of history. Drawn into an offscreen strip that is shifted
-   * left by a pixel each time, which is far cheaper than redrawing seven
-   * seconds of ribbon every frame.
+   * Advance the history by `k` columns. The offscreen strip is shifted once by
+   * the whole amount and the new columns are written at its right-hand edge.
+   * Shifting once per column, as this used to, copies the entire strip for
+   * every column -- affordable at 90 a second, not at the several hundred a
+   * second a six-second window needs on a wide, dense screen.
    */
-  function pushColumn(f, dt) {
-    if (!strip) return;
+  function pushColumns(f, dt, k) {
+    if (!strip || k <= 0) return;
+    k = Math.min(k, stripW);
     stripCtx.globalCompositeOperation = 'copy';
-    stripCtx.drawImage(strip, -1, 0);
+    stripCtx.drawImage(strip, -k, 0);
     stripCtx.globalCompositeOperation = 'source-over';
     stripCtx.fillStyle = '#080b16';
-    stripCtx.fillRect(stripW - 1, 0, 1, stripH);
+    stripCtx.fillRect(stripW - k, 0, k, stripH);
 
-    if (!f.active || f.level <= 0.004) return;
+    if (!f.active || f.level <= 0.004) { grainCol += k; return; }
 
     ripplePhase += (dt || 0.016) * 2 * Math.PI * 4;   // the 4 Hz it measures
 
@@ -199,46 +208,61 @@ export function createRenderer(canvas) {
     // tall, so the texture reads as a weave rather than as vertical streaks.
     const cell = Math.max(1, Math.round(grainPx * dpr));
     const rough = grainOf(f.rough);
-    if (rough > 0) {
-      const n = Math.ceil(stripH / cell) + 1;
-      if (!grainCells || grainCells.length !== n) grainCells = new Float32Array(n);
-      if (grainCol % cell === 0) {
-        for (let i = 0; i < n; i++) grainCells[i] = shapeGrain(Math.random());
-      }
+    const n = Math.ceil(stripH / cell) + 1;
+    let fresh = false;
+    if (rough > 0 && (!grainCells || grainCells.length !== n)) {
+      grainCells = new Float32Array(n);
+      fresh = true;
     }
-    grainCol++;
 
-    const img = stripCtx.getImageData(stripW - 1, 0, 1, stripH);
-    const d = img.data;
-    for (let y = 0; y < stripH; y++) {
-      const dy = (y - yc) / sigma;
-      let a = Math.exp(-0.5 * dy * dy);
-      if (a < 0.004) continue;
-      let cr = r, cg = g, cb = b;
-      if (rough > 0) {
-        const gv = grainCells[(y / cell) | 0] * rough * grainContrast;
-        if (gv > 0) {
-          cr += (255 - cr) * gv; cg += (255 - cg) * gv; cb += (255 - cb) * gv;
-        } else {
-          const k = 1 + gv;
-          cr *= k; cg *= k; cb *= k;
+    if (!colImg || colImg.height !== stripH) colImg = stripCtx.createImageData(1, stripH);
+    const d = colImg.data;
+
+    /** Fill the column image. Re-run only when the grain cells change. */
+    function buildColumn() {
+      d.fill(0);
+      for (let y = 0; y < stripH; y++) {
+        const dy = (y - yc) / sigma;
+        let a = Math.exp(-0.5 * dy * dy);
+        if (a < 0.004) continue;
+        let cr = r, cg = g, cb = b;
+        if (rough > 0) {
+          const gv = grainCells[(y / cell) | 0] * rough * grainContrast;
+          if (gv > 0) {
+            cr += (255 - cr) * gv; cg += (255 - cg) * gv; cb += (255 - cb) * gv;
+          } else {
+            const m = 1 + gv;
+            cr *= m; cg *= m; cb *= m;
+          }
         }
+        a = clamp01(a) * (0.35 + 0.65 * f.level);
+        const o = y * 4;
+        d[o] = cr | 0; d[o + 1] = cg | 0; d[o + 2] = cb | 0;
+        d[o + 3] = Math.round(a * 255);
       }
-      a = clamp01(a) * (0.35 + 0.65 * f.level);
-      const o = y * 4;
-      d[o] = cr | 0; d[o + 1] = cg | 0; d[o + 2] = cb | 0;
-      d[o + 3] = Math.round(a * 255);
     }
-    stripCtx.putImageData(img, stripW - 1, 0);
 
     // Voicing filament: a bright core, visible in proportion to how clearly
     // the larynx is running. Drawn into the field itself rather than into a
     // lane of its own, so there is still only one object to watch.
-    if (f.voicing > 0.12) {
-      const vis = Math.pow(f.voicing, 1.4);
-      stripCtx.fillStyle = `rgba(238,236,255,${0.10 + vis * 0.75})`;
-      const th = Math.max(1, Math.round(half * 0.22));
-      stripCtx.fillRect(stripW - 1, Math.round(yc - th / 2), 1, th);
+    const vis = f.voicing > 0.12 ? Math.pow(f.voicing, 1.4) : 0;
+    const th = Math.max(1, Math.round(half * 0.22));
+    if (vis) stripCtx.fillStyle = `rgba(238,236,255,${0.10 + vis * 0.75})`;
+
+    let built = false;
+    for (let c = 0; c < k; c++) {
+      // Grain cells are square and held across as many columns as they are
+      // tall, so the texture reads as a weave rather than as vertical streaks.
+      if (rough > 0 && (fresh || grainCol % cell === 0)) {
+        for (let i = 0; i < n; i++) grainCells[i] = shapeGrain(Math.random());
+        fresh = false;
+        built = false;
+      }
+      grainCol++;
+      if (!built) { buildColumn(); built = true; }
+      const x = stripW - k + c;
+      stripCtx.putImageData(colImg, x, 0);
+      if (vis) stripCtx.fillRect(x, Math.round(yc - th / 2), 1, th);
     }
 
     if (f.level > 0.25) {
@@ -382,9 +406,10 @@ export function createRenderer(canvas) {
     /** Advance the history by one column. Kept apart from draw() so that the
      *  ribbon scrolls at a rate set by the clock rather than by however often
      *  the machine happens to repaint. */
-    advance(f, dt) { pushColumn(f, dt); },
+    advance(f, dt, k = 1) { pushColumns(f, dt, k); },
     setMap(on) { showMap = on; },
-    get colsPerSec() { return COLS_PER_SEC; },
+    /** Device columns per second that make the strip span HISTORY_SECONDS. */
+    get colsPerSec() { return Math.max(30, stripW / HISTORY_SECONDS); },
 
     draw(f, dt) {
       if (!W || !H) resize();

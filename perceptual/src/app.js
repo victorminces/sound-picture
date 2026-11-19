@@ -253,9 +253,10 @@ function tick(now) {
   // cap stops a tab that was in the background from unspooling a minute of
   // history in one go when it comes back.
   colAcc += dt * renderer.colsPerSec;
-  let pushes = 0;
-  while (colAcc >= 1 && pushes < 8) { colAcc -= 1; pushes++; }
-  for (let i = 0; i < pushes; i++) renderer.advance(frame, i === 0 ? dt : 0);
+  const cap = Math.ceil(renderer.colsPerSec * 0.25);
+  const pushes = Math.min(cap, Math.floor(colAcc));
+  colAcc = Math.min(colAcc - pushes, 1);
+  renderer.advance(frame, dt, pushes);
   renderer.draw(frame, dt);
 
   const o = ui.out;
